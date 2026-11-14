@@ -245,6 +245,16 @@ func resolveRunwareVideoTask(schema *ModelInputSchema, req VideoGenerateRequest)
 				if prop, ok := schema.property("resolution"); ok {
 					if canonical, allowed := enumValueFor(prop, tier); allowed {
 						task["resolution"] = canonical
+					} else if snapped, ok := runwareNearestTierEnum(prop.Enum, tier); ok {
+						// The requested tier is beyond this model: one
+						// substitution to its nearest class beats a silent fall
+						// to a lower default (conv_9639d9f6dbc3c6be9c09bc05: an
+						// h3@fast image turn configured 1080p — a tier that
+						// variant's enum lacks — answered its 480p default,
+						// 832x480, when its 768p class was one honest step
+						// away).
+						task["resolution"] = snapped
+						notices = append(notices, fmt.Sprintf("The selected model %q does not offer resolution %q; generated at its closest, %s.", req.Model, tier, snapped))
 					} else {
 						notices = append(notices, fmt.Sprintf("The selected model %q does not offer resolution %q; using its default.", req.Model, tier))
 					}
@@ -275,10 +285,18 @@ func resolveRunwareVideoTask(schema *ModelInputSchema, req VideoGenerateRequest)
 			if tier != "" && schema != nil {
 				if prop, ok := schema.property("resolution"); ok {
 					canonical, allowed := enumValueFor(prop, tier)
+					snapped, snapOK := runwareNearestTierEnum(prop.Enum, tier)
 					switch {
-					case !aspectRequested && allowed:
+					case allowed && !aspectRequested:
 						task["resolution"] = canonical
 						tierSent = true
+					case snapOK && !aspectRequested:
+						// The requested tier is beyond this model; one
+						// substitution to its nearest class — an honest
+						// downgrade, never a silent fall to a lower default.
+						task["resolution"] = snapped
+						tierSent = true
+						notices = append(notices, fmt.Sprintf("The selected model %q does not offer resolution %q; generated at its closest, %s.", req.Model, tier, snapped))
 					case !allowed && aspectRequested:
 						notices = append(notices, fmt.Sprintf("The selected model %q does not offer resolution %q; generated at its closest available size.", req.Model, tier))
 					case !allowed:
@@ -353,12 +371,17 @@ func runwareDeclaresInput(schema *ModelInputSchema, key string) bool {
 // fixed width/height pairs and an off-list size is a 400 — else the aspect
 // is rendered onto the declared bounds at the tier's long edge, snapped to
 // the 64-px grid most Runware models require. The tier steers WHICH preset
-// wins when several share the aspect: the target the preset is scored
-// against is the aspect rendered at the tier's long edge, not the raw ratio
-// numbers, whose tiny product used to tie-break toward the smallest
-// same-ratio preset (16:9 at a configured 1080p landed 1280x720 instead of
-// 1920x1080). Without a requestable aspect nothing is sent and the model
-// uses its own default.
+// wins: when the schema also declares a resolution enum (every Runware video
+// packaging does), the requested tier snaps to the enum's nearest member and
+// the preset is picked from THAT class by aspect — MiniMax H3 publishes a
+// ratio-exact 480p preset beside its slightly-off 768p one, so a
+// ratio-first snap at a 1080p target landed the 480p class. A class with no
+// shape-plausible preset (a 21:9 ask against a 16:9-only class) falls to the
+// class-less snap: the aspect rendered at the tier's long edge, scored by
+// ratio then area — the raw ratio numbers' tiny product used to tie-break
+// toward the smallest same-ratio preset (16:9 at a configured 1080p landed
+// 1280x720 instead of 1920x1080). Without a requestable aspect nothing is
+// sent and the model uses its own default.
 func runwareVideoDimensions(schema *ModelInputSchema, aspect, tier string) (int, int, bool) {
 	aw, ah, hasAspect := 1, 1, false
 	if token := strings.TrimSpace(aspect); token != "" && !isAutoAspectRatio(token) {
@@ -376,6 +399,19 @@ func runwareVideoDimensions(schema *ModelInputSchema, aspect, tier string) (int,
 	}
 	if schema != nil {
 		if prop, ok := schema.property(runwareSizePresetsProperty); ok && len(prop.Enum) > 0 {
+			lines, hasClass := runwareTierScanLines(tier)
+			if resProp, ok := schema.property("resolution"); ok && len(resProp.Enum) > 0 {
+				if snapped, ok := runwareNearestTierEnum(resProp.Enum, tier); ok {
+					if memberLines, ok := runwareTierScanLines(snapped); ok {
+						lines, hasClass = memberLines, true
+					}
+				}
+			}
+			if hasClass {
+				if pw, ph, ok := runwarePresetForTier(prop.Enum, lines, aw, ah); ok {
+					return pw, ph, true
+				}
+			}
 			return runwareNearestPreset(prop.Enum, w, h)
 		}
 	}
@@ -409,6 +445,91 @@ func runwareTierLongEdge(tier string) int {
 	}
 	return 1280
 }
+
+// runwareTierScanLines reads a resolution tier as its scan-line count — the
+// short edge a preset of that tier renders ("1080p" → 1080, "4k" → 2160 on
+// the 16:9 UHD convention, an exotic "Np" planner tier at face value).
+// Strictly: an unreadable tier reports not-ok rather than a default, so a
+// junk tier can never masquerade as a real class.
+func runwareTierScanLines(tier string) (int, bool) {
+	token := strings.ToLower(strings.TrimSpace(tier))
+	if strings.HasSuffix(token, "p") {
+		if n, err := strconv.Atoi(strings.TrimSuffix(token, "p")); err == nil && n >= 144 && n <= 4320 {
+			return n, true
+		}
+	}
+	if strings.HasSuffix(token, "k") {
+		if n, err := strconv.Atoi(strings.TrimSuffix(token, "k")); err == nil && n >= 1 && n <= 8 {
+			return n * 540, true
+		}
+	}
+	return 0, false
+}
+
+// runwareNearestTierEnum snaps a requested tier onto the model's own tier
+// vocabulary — the enum member whose scan-line count is numerically nearest
+// the request's, ties toward the smaller (the conservative cost). A 1080p
+// ask on a 480p/768p model degrades one honest step instead of silently
+// landing on a lower default (conv_9639d9f6dbc3c6be9c09bc05: an h3@fast
+// image turn configured 1080p answered its 480p default — 832x480 — when
+// its 768p class was one substitution away).
+func runwareNearestTierEnum(members []string, tier string) (string, bool) {
+	want, ok := runwareTierScanLines(tier)
+	if !ok {
+		return "", false
+	}
+	best, bestDist, bestLines, found := "", math.Inf(1), 0, false
+	for _, member := range members {
+		lines, ok := runwareTierScanLines(member)
+		if !ok {
+			continue
+		}
+		dist := math.Abs(float64(lines - want))
+		if dist < bestDist-1e-9 || (dist <= bestDist+1e-9 && lines < bestLines) {
+			best, bestDist, bestLines, found = member, dist, lines, true
+		}
+	}
+	return best, found
+}
+
+// runwarePresetForTier picks from the preset class the scan-line count names
+// — presets whose short edge equals it — the one whose aspect is nearest the
+// request's (log-distance), provided that nearest stays shape-plausible
+// (within runwareTierClassRatioTolerance): a tier class never carries every
+// aspect, and forcing a 21:9 ask into the class's 16:9 preset would distort
+// the clip where the class-less snap would have found the model's own
+// ultrawide size. Not-ok sends the caller to that class-less snap.
+func runwarePresetForTier(presets []string, lines, aw, ah int) (int, int, bool) {
+	want := math.Log(float64(aw) / float64(ah))
+	bestW, bestH := 0, 0
+	bestRatio := math.Inf(1)
+	for _, p := range presets {
+		var w, h int
+		if _, err := fmt.Sscanf(p, "%dx%d", &w, &h); err != nil || w <= 0 || h <= 0 {
+			continue
+		}
+		short := w
+		if h < short {
+			short = h
+		}
+		if short != lines {
+			continue
+		}
+		if dist := math.Abs(math.Log(float64(w)/float64(h)) - want); dist < bestRatio-1e-9 {
+			bestW, bestH, bestRatio = w, h, dist
+		}
+	}
+	if bestW == 0 || bestRatio > runwareTierClassRatioTolerance {
+		return 0, 0, false
+	}
+	return bestW, bestH, true
+}
+
+// runwareTierClassRatioTolerance is how far (natural-log ratio) a tier
+// class's nearest preset may sit from the requested aspect before the class
+// counts as empty for that shape (16:9's common neighbors — 1.75:1
+// widescreen — sit at ~0.016; a 21:9 ask against a 16:9 class sits at 0.27).
+const runwareTierClassRatioTolerance = 0.1
 
 // resolveRunwareVideoUpscaleTask maps the canonical video-upscale request
 // onto Runware's upscale task. The factor is clamped into the declared

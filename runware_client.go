@@ -679,11 +679,14 @@ func injectRunwareSizePresets(task json.RawMessage, presets []string) (json.RawM
 
 // runwareNearestPreset picks the preset whose aspect ratio is closest to the
 // request's (log-distance, so 2:1 and 1:2 are equally far from 1:1), breaking
-// ties toward the area closest to the requested one. Width and height are the
-// requested PIXEL size, not a bare aspect ratio — the ratio's own numbers
-// (16x9 = 144 px²) would tie-break every same-ratio preset toward the
-// smallest, so a caller that knows only the shape renders it at its target
-// long edge first (runwareTierLongEdge).
+// ties toward the area closest to the requested one. Ratios within
+// runwarePresetRatioTieWindow count as tied: the same shape at two tiers
+// differs by ~0.2% (Kling's ultrawide 1460x624 vs 2200x940), and a strict
+// tie window would let that hair's difference overrule the tier the caller
+// asked for. Width and height are the requested PIXEL size, not a bare
+// aspect ratio — the ratio's own numbers (16x9 = 144 px²) would tie-break
+// every same-ratio preset toward the smallest, so a caller that knows only
+// the shape renders it at its target long edge first (runwareTierLongEdge).
 func runwareNearestPreset(presets []string, width, height int) (int, int, bool) {
 	want := math.Log(float64(width) / float64(height))
 	bestW, bestH := 0, 0
@@ -695,12 +698,18 @@ func runwareNearestPreset(presets []string, width, height int) (int, int, bool) 
 		}
 		ratio := math.Abs(math.Log(float64(w)/float64(h)) - want)
 		area := math.Abs(float64(w*h - width*height))
-		if ratio < bestRatio-1e-9 || (math.Abs(ratio-bestRatio) <= 1e-9 && area < bestArea) {
+		if ratio < bestRatio-runwarePresetRatioTieWindow || (ratio <= bestRatio+runwarePresetRatioTieWindow && area < bestArea) {
 			bestW, bestH, bestRatio, bestArea = w, h, ratio, area
 		}
 	}
 	return bestW, bestH, bestW > 0
 }
+
+// runwarePresetRatioTieWindow is how far (natural-log ratio) two presets may
+// sit from the request before their shapes count as different for the
+// area tie-break (~0.5%: the same 21:9 shape rendered at two tiers measures
+// 0.2% apart; genuinely different shapes — 16:9 vs 1.75:1 — sit at 1.6%).
+const runwarePresetRatioTieWindow = 0.005
 
 func newRunwareSchemaCache(httpClient *http.Client, storageRoot string) *SchemaCache {
 	return &SchemaCache{
