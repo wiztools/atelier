@@ -2461,7 +2461,10 @@ func mapNativeToolCalls(calls []ToolCall) ([]HarnessToolCall, []string) {
 // correctly, but the planner (native tool mode, so names are not enum-locked)
 // hallucinated extend_video three times — the audio-sibling extend_audio in the
 // catalog primes that name — and the turn exhausted its planning attempts
-// without any tool running.
+// without any tool running. The duration note (conv_9639d9f6dbc3c6be9c09bc05)
+// rides whenever any length-taking generation tool is offered: a user-stated
+// length is a structured parameter, not prompt prose, and one that the planner
+// drops entirely is silently replaced by the configured default.
 func plannerMediaRoutingGuidance(registry HarnessToolRegistry) string {
 	notes := make([]string, 0, 3)
 	if registry.VideoAudioCapable() {
@@ -2490,6 +2493,19 @@ func plannerMediaRoutingGuidance(registry HarnessToolRegistry) string {
 	for _, name := range promptAuthoredGenerationTools {
 		if _, ok := registry.Get(name); ok {
 			notes = append(notes, "Generation prompts are the model's whole world: the model behind a generation tool cannot see this conversation — only the content and parameters of your call. Every requirement the user stated for the result must be written into that call or it does not exist for the model: subject, style, camera, timing, spoken words, and above all the NEGATIVE ones (\"no lip movement\", \"no text\", \"don't change the background\"). A constraint that only shaped which tool you chose has not been passed on — state it in the prompt as well. Keep the user's own wording for anything they quoted or specified exactly.")
+			break
+		}
+	}
+	// conv_9639d9f6dbc3c6be9c09bc05: the user asked for "a 3s video", the
+	// planner expressed every camera direction in the prompt but dropped the
+	// length entirely — no duration param, not even prose — and the executor
+	// filled the gap with the configured default (10s), so the clip rendered
+	// three times the requested length. A stated length is not prompt prose:
+	// generation models take it only as the structured duration input, so the
+	// prompt-completeness rule needs this companion sentence.
+	for _, name := range []string{"generate_video", "generate_sound", "extend_audio"} {
+		if _, ok := registry.Get(name); ok {
+			notes = append(notes, "Clip length is a parameter, not prose: when the user states a length for the result (\"3s\", \"a 10-second clip\", \"half a minute\"), pass it as the call's duration (e.g. duration:\"3\") — a length left out of the call falls to the configured default and the user's number never reaches the model. When the user states no length, omit duration so the configured default applies.")
 			break
 		}
 	}

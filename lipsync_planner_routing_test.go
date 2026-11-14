@@ -203,6 +203,28 @@ func TestPlannerMediaRoutingGuidanceIncludesExtendNote(t *testing.T) {
 	}
 }
 
+// TestPlannerMediaRoutingGuidanceIncludesDurationNote is the regression for
+// conv_9639d9f6dbc3c6be9c09bc05: the user asked for "a 3s video", the planner
+// dropped the length entirely (no duration param, not even prose), and the
+// executor filled the gap with the configured default — a clip three times
+// the requested length. A stated length must ride the call's duration
+// parameter, and the note rides every length-taking generation tool.
+func TestPlannerMediaRoutingGuidanceIncludesDurationNote(t *testing.T) {
+	got := plannerMediaRoutingGuidance(newPlannerRegistry(false))
+	if !strings.Contains(got, "Clip length is a parameter, not prose") {
+		t.Fatalf("guidance must teach the duration parameter rule, got %q", got)
+	}
+	if !strings.Contains(got, `duration:"3"`) {
+		t.Fatalf("the rule should carry a concrete duration example, got %q", got)
+	}
+	if got := plannerMediaRoutingGuidance(newHarnessToolRegistry([]HarnessToolDefinition{{Name: "generate_speech"}})); strings.Contains(got, "Clip length") {
+		t.Fatalf("generate_speech takes no duration; the note must stay out, got %q", got)
+	}
+	if got := plannerMediaRoutingGuidance(newHarnessToolRegistry([]HarnessToolDefinition{{Name: "read_file"}})); strings.Contains(got, "Clip length") {
+		t.Fatalf("guidance must be empty without a length-taking tool, got %q", got)
+	}
+}
+
 // TestPlannerMediaRoutingGuidancePromptCompletenessRule pins the
 // conv_f20d9814014b5f5204178459 rule: the user asked for "no lip movement",
 // the planner read it as a tool-choice reason, and the generate_video prompt
