@@ -98,11 +98,14 @@ func listLibraryAssetRecords(storage ConfigStorage, libraryID string) ([]Library
 		}
 		records = append(records, record)
 	}
+	// Newest-first by instant (compareRFC3339Instant, same rule as the mixed
+	// fold below — records all carry UTC stamps today, but the ordering must
+	// not depend on it), ties by ID.
 	sort.Slice(records, func(i, j int) bool {
-		if records[i].CreatedAt == records[j].CreatedAt {
-			return records[i].ID < records[j].ID
+		if order := compareRFC3339Instant(records[i].CreatedAt, records[j].CreatedAt); order != 0 {
+			return order > 0
 		}
-		return records[i].CreatedAt > records[j].CreatedAt
+		return records[i].ID < records[j].ID
 	})
 	return records, nil
 }

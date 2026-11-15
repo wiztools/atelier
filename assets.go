@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // ConversationAsset is one referable media artifact in a conversation's
@@ -318,6 +319,34 @@ func invalidateConversationAssetCache(dirs []string) {
 	}
 }
 
+// compareRFC3339Instant orders two RFC3339 timestamps by instant, not by
+// string (-1 when a is older, 0 when equal, 1 when newer). The asset panel's
+// two stamp spellings meet in one sort: derived assets inherit their turn's
+// CreatedAt, written local ("…+05:30" — time.Now's RFC3339 in
+// conversation_turns.go), while upload records stamp the media file's mod
+// time in UTC ("…Z" — library_assets.go). A lexicographic sort pits the two
+// wall clocks against each other: on a +05:30 machine a just-uploaded file
+// reads five and a half hours older than every asset generated alongside it
+// and sinks below half the panel (the "upload not at the top" report). Equal
+// instants return 0 so callers keep their own tie-break; a stamp that fails
+// to parse degrades to the string comparison — the pre-fix behavior — rather
+// than mis-sorting one corrupt stamp into the top slot.
+func compareRFC3339Instant(a, b string) int {
+	aTime, aErr := time.Parse(time.RFC3339, a)
+	bTime, bErr := time.Parse(time.RFC3339, b)
+	if aErr != nil || bErr != nil {
+		return strings.Compare(a, b)
+	}
+	switch {
+	case aTime.Before(bTime):
+		return -1
+	case bTime.Before(aTime):
+		return 1
+	default:
+		return 0
+	}
+}
+
 // listLibraryAssets folds every conversation in a library's projects into one
 // asset list — the library-level view for the assets panel and the @-mention
 // picker. Assets stay physically in their owning conversation's artifacts
@@ -380,11 +409,13 @@ func listLibraryAssets(storage ConfigStorage, libraryID string) ([]ConversationA
 			assets = append(assets, asset)
 		}
 	}
+	// Newest-first by instant (compareRFC3339Instant — this list mixes the
+	// upload records' UTC stamps with the turns' local ones), ties by ID.
 	sort.Slice(assets, func(i, j int) bool {
-		if assets[i].CreatedAt == assets[j].CreatedAt {
-			return assets[i].ID < assets[j].ID
+		if order := compareRFC3339Instant(assets[i].CreatedAt, assets[j].CreatedAt); order != 0 {
+			return order > 0
 		}
-		return assets[i].CreatedAt > assets[j].CreatedAt
+		return assets[i].ID < assets[j].ID
 	})
 	return stampAssetAliases(storage, assets), nil
 }

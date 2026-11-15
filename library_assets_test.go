@@ -357,6 +357,89 @@ func TestListLibraryAssetsMentionKeepsUploadIdentity(t *testing.T) {
 	}
 }
 
+// forceUploadStamp rewrites an upload record's CreatedAt — uploadLibraryAsset
+// derives it from the media file's mod time, so a test wanting a specific
+// stamp must put one on the record itself.
+func forceUploadStamp(t *testing.T, storage ConfigStorage, libraryID, assetID, stamp string) {
+	t.Helper()
+	path := filepath.Join(libraryAssetsDir(storage, libraryID), assetID+".json")
+	var record LibraryAsset
+	if err := readJSONFile(path, &record); err != nil {
+		t.Fatalf("read upload record: %v", err)
+	}
+	record.CreatedAt = stamp
+	if err := writeJSONFile(path, record); err != nil {
+		t.Fatalf("write upload record: %v", err)
+	}
+}
+
+// The panel's two stamp spellings meet in one sort: derived assets inherit
+// their turn's CreatedAt, written LOCAL ("…+05:30" — time.Now's RFC3339,
+// conversation_turns.go), while upload records stamp the media file's mod
+// time in UTC ("…Z", library_assets.go). The old lexicographic sort pitted
+// the two wall clocks against each other — on a +05:30 machine a
+// just-uploaded file read five and a half hours older than every asset
+// generated alongside it and sank below half the panel (the "upload not at
+// the top" report). The instants here order vid_new (04:50Z) > uploadB
+// (04:40Z) > img_old (04:30Z) > uploadA (03:30Z), while the raw strings
+// order vid_new > img_old > uploadA > uploadB — so only instant comparison
+// gets the fold, and the records listing, right.
+func TestListLibraryAssetsSortsMixedTimestampSpellingsByInstant(t *testing.T) {
+	storage := libraryTestStorage(t)
+	config := libraryAssetTestConfig(t, storage)
+	libraryID := mustCreateLibrary(t, storage)
+	project, err := createProject(storage, libraryID, "Project")
+	if err != nil {
+		t.Fatalf("createProject returned error: %v", err)
+	}
+
+	writeArchiveConversation(t, storage,
+		libraryConversationFixture("conv_tz", "Chat", "2026-08-02T10:00:00+05:30", project.ID),
+		[]HistoryTurn{
+			searchTurnFixture("turn_000001", "assistant", "2026-08-02T10:00:00+05:30",
+				HistoryContent{Type: "image", Path: "artifacts/img_old.png", MimeType: "image/png", ArtifactID: "img_old"},
+			),
+			searchTurnFixture("turn_000002", "assistant", "2026-08-02T10:20:00+05:30",
+				HistoryContent{Type: "video", Path: "artifacts/vid_new.mp4", MimeType: "video/mp4", ArtifactID: "vid_new"},
+			),
+		},
+		map[string][]byte{"img_old.png": []byte("png-bytes"), "vid_new.mp4": []byte("mp4-bytes")},
+	)
+	uploadA := mustUploadLibraryAsset(t, config, libraryID, "", "first.png", "image",
+		dataURLFor("image/png", mediasnifftest.Image(t, "png", 1, 1)))
+	uploadB := mustUploadLibraryAsset(t, config, libraryID, "", "second.png", "image",
+		dataURLFor("image/png", mediasnifftest.Image(t, "png", 2, 2)))
+	forceUploadStamp(t, storage, libraryID, uploadA.ID, "2026-08-02T09:00:00+05:30")
+	forceUploadStamp(t, storage, libraryID, uploadB.ID, "2026-08-02T04:40:00Z")
+
+	// The records listing bites the same way: B is the newer instant but the
+	// lexicographically smaller string.
+	records, err := listLibraryAssetRecords(storage, libraryID)
+	if err != nil {
+		t.Fatalf("listLibraryAssetRecords returned error: %v", err)
+	}
+	if len(records) != 2 || records[0].ID != uploadB.ID || records[1].ID != uploadA.ID {
+		names := []string{}
+		for _, record := range records {
+			names = append(names, record.Name)
+		}
+		t.Fatalf("records order = %v, want [second.png first.png] by instant", names)
+	}
+
+	assets, err := listLibraryAssets(storage, libraryID)
+	if err != nil {
+		t.Fatalf("listLibraryAssets returned error: %v", err)
+	}
+	ids := []string{}
+	for _, asset := range assets {
+		ids = append(ids, asset.ID)
+	}
+	want := []string{"vid_new", uploadB.ID, "img_old", uploadA.ID}
+	if strings.Join(ids, ",") != strings.Join(want, ",") {
+		t.Fatalf("fold order = %v, want %v (newest instant first)", ids, want)
+	}
+}
+
 func TestDeleteLibraryAsset(t *testing.T) {
 	storage := libraryTestStorage(t)
 	config := libraryAssetTestConfig(t, storage)
