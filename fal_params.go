@@ -232,6 +232,16 @@ var imageSynonyms = map[string][]string{
 	"numInferenceSteps": {"num_inference_steps"},
 }
 
+// errFalKeyframesUnsupported is the deterministic refusal behind
+// resolveVideoBody's keyframe branch: a keyframe turn on a model whose schema
+// declares no end-frame field cannot anchor a transition, and degrading — to a
+// start-only animation or to loose references — bills a clip that does not end
+// at the frame the user named as the ending (conv_3bf4561b7c7dbb19316e2936).
+// The executor catches this sentinel and retargets the transition onto the
+// frame-capable image-to-video slot once, so the error only reaches a reply
+// when no configured slot can serve it.
+var errFalKeyframesUnsupported = errors.New("the configured keyframes model declares no start/end frame inputs, so it cannot anchor a transition between two images — set the video keyframes model in Settings → Models to a transition endpoint (e.g. fal-ai/bytedance/seedance-2.0/image-to-video)")
+
 // videoSynonyms lists, per canonical param, the native key names to look for in
 // a video model's schema. `sourceImage` is the image-to-video frame; `sourceVideo`
 // is the clip a Veo extend endpoint continues. Both sides list the plural array
@@ -1616,19 +1626,20 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 	// dialects, start_image_url on the Kling o1 editions), the last is the
 	// closing frame (the model's end-frame field).
 	// The tool layer already guaranteed exactly two images. If the model has no
-	// end-frame input, drop the closing frame with a notice and let the request
-	// run as plain image-to-video from the opening frame — a partial loss that
-	// still honors the opening frame, unlike a fully unmapped source side,
-	// which refuses above.
+	// end-frame input, the transition cannot anchor: degrading — trimming to
+	// the start frame, or letting both frames ride as loose references — bills
+	// a clip that does not end at the frame the user named as the ending
+	// (conv_3bf4561b7c7dbb19316e2936 first as a silent reference rebind, then,
+	// once the notices were honest, as the same wrong video with a warning).
+	// The errRunwareVideoSourceUnsupported stance applies here too: refuse
+	// before any money moves with the remedy in the message, and let the tool
+	// layer fall back to the frame-capable image-to-video slot.
 	if req.Keyframes && len(sourceImages) >= 2 {
-		endFrame := sourceImages[len(sourceImages)-1]
-		if path, prop, ok := findNative(schema, ov, "video", req.Model, "endImage"); ok {
-			setBodyPath(schema, body, path, coerceVideoValue(prop, endFrame))
-		} else {
-			notices = append(notices, fmt.Sprintf(
-				"The selected model %q has no end-frame input; animating from the start frame only.",
-				req.Model))
+		endPath, endProp, endOK := findNative(schema, ov, "video", req.Model, "endImage")
+		if !endOK {
+			return nil, nil, nil, fmt.Errorf("model %q: %w", req.Model, errFalKeyframesUnsupported)
 		}
+		setBodyPath(schema, body, endPath, coerceVideoValue(endProp, sourceImages[len(sourceImages)-1]))
 		sourceImages = sourceImages[:1]
 	}
 	if len(sourceImages) > 0 {

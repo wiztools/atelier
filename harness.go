@@ -2473,6 +2473,16 @@ func plannerMediaRoutingGuidance(registry HarnessToolRegistry) string {
 	if _, ok := registry.Get("generate_video"); ok {
 		notes = append(notes, "Video extends: when the user asks to extend, continue, or lengthen an attached or recent video, call generate_video — content describes the ADDED segment, duration is the seconds to add, and the attached or most recent video is continued automatically (there is no separate extend_video tool). Never emit a tool name outside the ones listed for you: a plan corrected for an unknown tool name is invalid input, not a failed execution — re-emit the call with the listed tool instead of reporting failure.")
 	}
+	// conv_3bf4561b7c7dbb19316e2936: triage routed the turn as a two-frame
+	// transition, but the planner authored the generate_video call without
+	// imageRole — only prompt prose and an aspect ratio — and the executor's
+	// default diagnosis sent both frames as loose reference media, so the paid
+	// clip's ending was never anchored to the frame the user named as the end.
+	// The transition is a structured role like the duration above: it must ride
+	// the call or it does not reach the model.
+	if _, ok := registry.Get("generate_video"); ok {
+		notes = append(notes, "A start→end transition is a parameter, not prose: when the user supplies or names two images as the clip's first and last frames (\"start frame … end frame\", \"animate from @x to @y\"), pass imageRole:\"keyframes\" on the generate_video call — and openingFrame:\"second\" when the @-mentioned start frame resolves second (images resolve attached files first, then @-mentions). Without the flag both images ride as loose style/character references and the clip's ending is not anchored to the end frame.")
+	}
 	// conv_2d4937338a9bd96d05420e98: a generate_image 422 naming the model's
 	// output-area window ("Output area must be 655360 to 20000000 pixels ...
 	// Got 1024x576") came back with a retry still available, and the planner
@@ -3782,6 +3792,10 @@ func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conv
 	gateway.tools.AttachedAudios = turn.AttachedAudios
 	gateway.tools.VoiceReference = turn.VoiceReference
 	gateway.tools.AttachedVideos = turn.AttachedVideos
+	// The triage pass's routing note, for generate_video's keyframe-intent
+	// recovery: when the planner drops imageRole from a two-image transition
+	// call, the executor binds the role triage named (conv_3bf4561b7c7dbb19316e2936).
+	gateway.tools.TriageTask = turn.ToolTask
 	// History access for the planner's explicit source: generate_video re-reads
 	// the newest artifact of the named kind when the turn's slots lack it.
 	gateway.tools.Storage = h.config.Storage

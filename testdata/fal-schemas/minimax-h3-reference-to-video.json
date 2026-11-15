@@ -1,0 +1,326 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Queue OpenAPI for minimax/h3/reference-to-video",
+    "version": "1.0.0",
+    "description": "The OpenAPI schema for the minimax/h3/reference-to-video queue.",
+    "x-fal-metadata": {
+      "endpointId": "minimax/h3/reference-to-video",
+      "category": "image-to-video",
+      "thumbnailUrl": "https://v3b.fal.media/files/b/0aa42dcf/3VDKabd7ifjCezrQpdfEI.jpg",
+      "playgroundUrl": "https://fal.ai/models/minimax/h3/reference-to-video",
+      "documentationUrl": "https://fal.ai/models/minimax/h3/reference-to-video/api",
+      "about": "Reference To Video Hailuo 03"
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "apiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Authorization",
+        "description": "Fal Key"
+      }
+    },
+    "schemas": {
+      "QueueStatus": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "IN_QUEUE",
+              "IN_PROGRESS",
+              "COMPLETED"
+            ]
+          },
+          "request_id": {
+            "type": "string",
+            "description": "The request id."
+          },
+          "response_url": {
+            "type": "string",
+            "description": "The response url."
+          },
+          "status_url": {
+            "type": "string",
+            "description": "The status url."
+          },
+          "cancel_url": {
+            "type": "string",
+            "description": "The cancel url."
+          },
+          "logs": {
+            "type": "object",
+            "description": "The logs.",
+            "additionalProperties": true
+          },
+          "metrics": {
+            "type": "object",
+            "description": "The metrics.",
+            "additionalProperties": true
+          },
+          "queue_position": {
+            "type": "integer",
+            "description": "The queue position."
+          }
+        },
+        "required": [
+          "status",
+          "request_id"
+        ]
+      },
+      "H3ReferenceToVideoInput": {
+        "properties": {
+          "duration": {
+            "type": "integer",
+            "default": 5,
+            "title": "Duration",
+            "maximum": 15,
+            "description": "The duration of the video in seconds.",
+            "minimum": 5
+          },
+          "enable_safety_checker": {
+            "title": "Enable Safety Checker",
+            "default": true,
+            "description": "If set to true, the safety checker will be enabled.",
+            "type": "boolean"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Random seed. A random seed is selected when omitted.",
+            "title": "Seed"
+          },
+          "sync_mode": {
+            "title": "Sync Mode",
+            "default": false,
+            "description": "Return the generated video as base64 instead of a CDN URL.",
+            "type": "boolean"
+          },
+          "target_audio_url": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional URL of an audio clip at least 2 seconds long (maximum 15 MB) to pin to the generated soundtrack. Cannot be combined with reference audio. Longer clips are trimmed to the generated video's length, keeping the beginning; shorter clips are padded with silence. The clip is resampled to 32 kHz stereo and replaces the output soundtrack without changing playback speed. Accepts an HTTP(S) URL or a base64 data URI.",
+            "title": "Target Audio URL"
+          },
+          "reference_image_urls": {
+            "maxItems": 9,
+            "title": "Reference Image URLs",
+            "items": {
+              "type": "string"
+            },
+            "description": "URLs of subject/style reference images, referenced in the prompt as Image 1, Image 2, and so on. Reference images, videos, and audio clips must add up to at most 12 files.",
+            "examples": [
+              [
+                "https://storage.googleapis.com/falserverless/example_inputs/hailuo23/pro_i2v_in.jpg"
+              ]
+            ],
+            "type": "array"
+          },
+          "reference_audio_urls": {
+            "maxItems": 3,
+            "title": "Reference Audio URLs",
+            "items": {
+              "type": "string"
+            },
+            "description": "URLs of reference audio clips (2-15 seconds each, combined duration at most 15 seconds), referenced in the prompt as Audio 1, Audio 2, and so on. Images, videos, and audio can be provided individually or together. Reference images, videos, and audio clips must add up to at most 12 files.",
+            "type": "array"
+          },
+          "reference_video_urls": {
+            "maxItems": 3,
+            "title": "Reference Video URLs",
+            "items": {
+              "type": "string"
+            },
+            "description": "URLs of motion/reference video clips (2-15 seconds each, combined duration at most 15 seconds), referenced in the prompt as Video 1, Video 2, and so on. Reference images, videos, and audio clips must add up to at most 12 files.",
+            "type": "array"
+          },
+          "resolution": {
+            "title": "Resolution",
+            "default": "2K",
+            "description": "The resolution of the generated video. 480P and 768P are native generation modes; 2K and 4K upscale a 768P base result.",
+            "enum": [
+              "480P",
+              "768P",
+              "2K",
+              "4K"
+            ],
+            "type": "string"
+          },
+          "prompt_expansion_mode": {
+            "default": "balanced",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How much effort to spend rewriting the prompt before generation. 'disabled' skips prompt expansion. 'fast' returns in about a second. 'balanced' picks per request. 'quality' spends up to ~30s on a richer prompt.",
+            "examples": [
+              "disabled",
+              "fast",
+              "balanced",
+              "quality"
+            ],
+            "title": "Prompt Expansion Mode"
+          },
+          "aspect_ratio": {
+            "title": "Aspect Ratio",
+            "default": "adaptive",
+            "description": "The aspect ratio of the generated video.",
+            "enum": [
+              "adaptive",
+              "21:9",
+              "16:9",
+              "4:3",
+              "1:1",
+              "3:4",
+              "9:16"
+            ],
+            "type": "string"
+          },
+          "prompt": {
+            "title": "Prompt",
+            "minLength": 1,
+            "examples": [
+              "Image 1 is the female protagonist. Image 2 is her small dog. Keep the woman and dog consistent with their respective reference images while they walk together through a sunlit garden."
+            ],
+            "description": "Text prompt for video generation. Refer to reference assets by their modality and order in the reference lists: Image 1, Image 2, Video 1, Audio 1, and so on.",
+            "maxLength": 50000,
+            "type": "string"
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "title": "ReferenceToVideoHailuo03Input",
+        "x-fal-order-properties": [
+          "prompt",
+          "duration",
+          "resolution",
+          "seed",
+          "enable_safety_checker",
+          "sync_mode",
+          "prompt_expansion_mode",
+          "aspect_ratio",
+          "reference_image_urls",
+          "reference_video_urls",
+          "reference_audio_urls",
+          "target_audio_url"
+        ],
+        "type": "object"
+      },
+      "H3ReferenceToVideoOutput": {
+        "properties": {
+          "expanded_prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The prompt after expansion, as sent to the model. Null when prompt expansion was disabled, left the prompt unchanged, or was performed internally by MiniMax's hosted API.",
+            "title": "Expanded Prompt"
+          },
+          "video": {
+            "description": "The generated video",
+            "$ref": "#/components/schemas/File"
+          }
+        },
+        "required": [
+          "video"
+        ],
+        "title": "ReferenceToVideoHailuo03Output",
+        "x-fal-order-properties": [
+          "video",
+          "expanded_prompt"
+        ],
+        "type": "object"
+      },
+      "File": {
+        "properties": {
+          "file_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The size of the file in bytes.",
+            "examples": [
+              4404019
+            ],
+            "title": "File Size"
+          },
+          "content_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The mime type of the file.",
+            "examples": [
+              "image/png"
+            ],
+            "title": "Content Type"
+          },
+          "url": {
+            "title": "Url",
+            "description": "The URL where the file can be downloaded from.",
+            "type": "string"
+          },
+          "file_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The name of the file. It will be auto-generated if not provided.",
+            "examples": [
+              "z9RV14K95DvU.png"
+            ],
+            "title": "File Name"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "File",
+        "x-fal-order-properties": [
+          "url",
+          "content_type",
+          "file_name",
+          "file_size"
+        ],
+        "type": "object"
+      }
+    }
+  }
+}

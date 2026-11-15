@@ -72,6 +72,15 @@ type HarnessToolExecutionContext struct {
 	// a reference-to-video model; the lip sync and upscale tools use the first
 	// clip. Tool-only: they never reach a chat model.
 	AttachedVideos []string
+	// TriageTask is the triage pass's toolTask prose — the harness model's own
+	// routing note for this turn ("generate_video with imageRole:'keyframes'
+	// using @x as the opening frame …"). generate_video reads it to recover a
+	// keyframe intent the planner dropped from its call (conv_3bf4561b7c7dbb19316e2936):
+	// toolTask is non-binding guidance a weak planner can override, but it is
+	// still the harness's routing decision, and a two-image call that expresses
+	// no role of its own cannot carry the ambiguity resolution. Empty on the
+	// direct/UI tool path, where the caller's own params are the whole contract.
+	TriageTask string
 	// Storage and ConversationID let generate_video re-read the conversation's
 	// most recent artifact of a kind when the planner's explicit source names
 	// one the slots don't carry (a bare follow-up whose fallback resolved to a
@@ -1135,6 +1144,20 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 					return []string{prefix + ".openingFrame must be \"first\" or \"second\" for generate_video"}
 				}
 			}
+			// artifactId and at belong to other tools (convert_subtitles/burn_subtitles,
+			// screenshot_video) and generate_video ignores them — but the planner
+			// invented both when a triage note named the frame ids
+			// (conv_c10e9937ac0dba41911a64f5: it split the turn into one call per
+			// image, binding each id, and the second call's paid duplicate
+			// diagnosis collided with the first call's forward-fed clip). The
+			// correction re-anchors the shape: the attachments already ride the
+			// call, and a transition is ONE call carrying both frames.
+			if id := strings.TrimSpace(call.ArtifactID); id != "" {
+				return []string{fmt.Sprintf("%s.artifactId is not a generate_video parameter — the turn's attached images already resolve onto the call automatically; do not bind them per call. For a start→end transition pass imageRole:\"keyframes\" and make it ONE call carrying both frames (the first attached image opens the clip, the last closes it)", prefix)}
+			}
+			if strings.TrimSpace(call.At) != "" {
+				return []string{prefix + ".at is not a generate_video parameter (frame grabs at a timestamp belong to screenshot_video) — omit it"}
+			}
 			return nil
 		},
 		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
@@ -1160,7 +1183,30 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 			attachedImages := tools.AttachedImages
 			attachedVideos := nonEmptyVideos(tools.AttachedVideos)
 			videoRole := strings.ToLower(strings.TrimSpace(call.UseVideoAs))
+			source := strings.ToLower(strings.TrimSpace(call.Source))
 			keyframes := strings.EqualFold(strings.TrimSpace(call.ImageRole), "keyframes")
+			// Keyframe-intent recovery: triage routed the turn as a two-frame
+			// transition but the planner dropped imageRole from its call — the
+			// same planner-drop family as the lost durations
+			// (conv_9639d9f6dbc3c6be9c09bc05, conv_a38c8da150fcc0a1a899c115).
+			// Left alone, a bare two-image call degrades to the reference
+			// diagnosis: both frames ride as loose style/character guidance and
+			// the clip's ending is not anchored to the end frame
+			// (conv_3bf4561b7c7dbb19316e2936: the paid clip ignored the frame
+			// the user named as the ending, while the reply claimed it settled
+			// into it). Triage's toolTask is the harness's own routing note, so
+			// when it names keyframes and the call expresses no opinion of its
+			// own — no imageRole, no useVideoAs:"reference", no source override
+			// — the diagnosis binds it. Exactly two images and no attached
+			// video: keyframes needs exactly two, and a video alongside means
+			// motion control, not a transition. The planner's explicit choices
+			// always win over the prose.
+			recoveredKeyframes := false
+			if !keyframes && len(attachedImages) == 2 && len(attachedVideos) == 0 &&
+				videoRole != "reference" && source == "" && triageNamesKeyframes(tools.TriageTask) {
+				keyframes = true
+				recoveredKeyframes = true
+			}
 			if keyframes && len(attachedImages) != 2 {
 				return nil, "video generation unavailable", fmt.Errorf(
 					"imageRole \"keyframes\" needs exactly two images (the first and last frames); %d were attached",
@@ -1188,7 +1234,6 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 			// are dropped with a notice, and an unfulfillable source fails the
 			// call rather than generating a clip nobody asked for. Reference
 			// mode is the stronger, existing override and bypasses this.
-			source := strings.ToLower(strings.TrimSpace(call.Source))
 			var sourceNotices []string
 			if videoRole != "reference" {
 				switch source {
@@ -1333,6 +1378,41 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 				GenerateAudio:       call.GenerateAudio,
 			}
 			generated, err := tools.GenerateVideo(ctx, videoReq)
+			// Keyframe-slot fallback: a transition the configured keyframes
+			// model cannot anchor refuses resolver-side before any money moves
+			// (errFalKeyframesUnsupported reads the model's schema), and the
+			// image-to-video slot configured right beside it is often the
+			// frame-capable sibling — minimax/h3-max/reference-to-video
+			// declares image_url + end_image_url where h3/reference-to-video
+			// declares neither (conv_c10e9937ac0dba41911a64f5: the recovered
+			// transition landed on the frame-less keyframes pin, degraded to
+			// loose references, and the clip again ignored the end frame). The
+			// retarget runs once, under a notice naming the swap and the
+			// Settings remedy. A planner-specified model is respected, a batch
+			// sibling that already delivered a clip stands the retry down (its
+			// video feeds the slots; a second paid transition is not what the
+			// split produced), and a fallback equal to the refused model has
+			// nowhere to go.
+			keyframesFallbackNotice := ""
+			if err != nil && keyframes && len(attachedVideos) == 0 &&
+				strings.TrimSpace(call.Model) == "" && errors.Is(err, errFalKeyframesUnsupported) {
+				if fallback := resolveDefaultVideoImageModel(tools.Config); fallback != "" && fallback != model {
+					retried := videoReq
+					retried.Model = fallback
+					if retriedGenerated, retryErr := tools.GenerateVideo(ctx, retried); retryErr == nil {
+						generated = retriedGenerated
+						model = fallback
+						err = nil
+						keyframesFallbackNotice = fmt.Sprintf(
+							"The configured keyframes model %q has no start/end frame inputs, so the transition ran on the image-to-video model %q instead — set the video keyframes model in Settings → Models to a transition endpoint to make this automatic.",
+							videoReq.Model, fallback)
+					} else {
+						return nil, "video generation failed", fmt.Errorf(
+							"%v; the image-to-video fallback %q cannot serve the transition either — set the video keyframes model in Settings → Models to a transition endpoint (e.g. fal-ai/bytedance/seedance-2.0/image-to-video)",
+							err, fallback)
+					}
+				}
+			}
 			if err != nil {
 				return nil, "video generation failed", err
 			}
@@ -1358,7 +1438,14 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 			// in the reply, so it needs no post-success executor additions.
 			output.Notices = generated.Notices
 			output.Diagnostics = generated.Diagnostics
+			if recoveredKeyframes {
+				output.Diagnostics = append(output.Diagnostics,
+					"The planned call omitted imageRole, but the turn was triaged as a start→end transition between two frames, so the call ran with imageRole \"keyframes\": the first image opens the clip and the last closes it.")
+			}
 			output.Notices = append(output.Notices, sourceNotices...)
+			if keyframesFallbackNotice != "" {
+				output.Notices = append(output.Notices, keyframesFallbackNotice)
+			}
 			if len(requestVideos) < len(attachedVideos) {
 				output.Notices = append(output.Notices, fmt.Sprintf(
 					"%d videos were attached but this mode uses only the first; pass useVideoAs:\"reference\" to send every attached video as reference media.",
@@ -1383,6 +1470,8 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 				summary = fmt.Sprintf("transferred the attached video's motion onto the attached image with %s", model)
 			} else if videoUsed {
 				summary = fmt.Sprintf("extended the attached video into a longer clip with %s", model)
+			} else if keyframes && imagesUsed {
+				summary = fmt.Sprintf("rendered a start→end transition from the two attached images with %s", model)
 			} else if imageCount := len(attachedImages); imageCount > 1 && imagesUsed {
 				summary = fmt.Sprintf("combined %d attached images into a video with %s", imageCount, model)
 			} else if imageCount == 1 && imagesUsed {
@@ -1403,6 +1492,15 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 			return activity
 		},
 	}
+}
+
+// triageNamesKeyframes reports whether the triage pass's toolTask names a
+// two-frame transition. The triage prompt's video bullet teaches the literal
+// vocabulary ("name generate_video with imageRole:\"keyframes\" in toolTask"),
+// so the sniff reads the contract word, not incidental prose. Lowercase and
+// unstemmed: "keyframe" matches "keyframes" and "keyframed".
+func triageNamesKeyframes(task string) bool {
+	return strings.Contains(strings.ToLower(task), "keyframe")
 }
 
 // writeTempMediaBytes writes downloaded media bytes to a temp file named

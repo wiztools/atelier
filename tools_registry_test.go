@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -286,6 +287,33 @@ func TestGenerateVideoImageRoleValidation(t *testing.T) {
 	}
 }
 
+// TestGenerateVideoRejectsForeignParams pins the foreign-param corrections
+// (conv_c10e9937ac0dba41911a64f5): a triage note naming the frame artifact ids
+// led the planner to split the turn into one generate_video call per image,
+// binding each id through artifactId (a convert_subtitles/burn_subtitles param
+// the executor silently ignores) alongside screenshot_video's at. The
+// attachments already ride the call, and a transition is ONE call — the
+// correction must say both.
+func TestGenerateVideoRejectsForeignParams(t *testing.T) {
+	def := videoGenerationToolDefinition(AppConfig{}, false)
+
+	errs := def.Validate("toolCalls[0]", HarnessToolCall{
+		Name: "generate_video", Content: "morph", ImageRole: "keyframes", ArtifactID: "img_f06f522b"})
+	if len(errs) != 1 || !strings.Contains(errs[0], "artifactId is not a generate_video parameter") {
+		t.Fatalf("artifactId should be rejected with the binding correction, got %v", errs)
+	}
+	for _, want := range []string{"already resolve onto the call", "ONE call carrying both frames"} {
+		if !strings.Contains(errs[0], want) {
+			t.Fatalf("artifactId correction = %q, want it to contain %q", errs[0], want)
+		}
+	}
+
+	errs = def.Validate("toolCalls[0]", HarnessToolCall{Name: "generate_video", Content: "morph", At: "0"})
+	if len(errs) != 1 || !strings.Contains(errs[0], ".at is not a generate_video parameter") {
+		t.Fatalf("at should be rejected naming screenshot_video, got %v", errs)
+	}
+}
+
 // TestGenerateVideoFrameCorrectionsNameTheOmitRemedy pins the wording of the
 // two frame-param corrections: each must tell the planner to OMIT the param,
 // since that is the fix for a single starting frame. The old imageRole message
@@ -384,6 +412,350 @@ func TestGenerateVideoImageRoleKeyframesRouting(t *testing.T) {
 		}
 		if called {
 			t.Fatalf("GenerateVideo should not be called when the image count is wrong")
+		}
+	})
+}
+
+// TestGenerateVideoKeyframesRecoveredFromTriage pins the keyframe-intent
+// recovery (conv_3bf4561b7c7dbb19316e2936): triage routed the turn as a
+// start→end transition, the planner authored the call without imageRole, and
+// the bare two-image call degraded to the reference diagnosis — both frames
+// rode as loose guidance and the clip's ending was never anchored to the end
+// frame. When the triage toolTask names keyframes and the call expresses no
+// role of its own, the executor binds the transition; the planner's explicit
+// choices always win.
+func TestGenerateVideoKeyframesRecoveredFromTriage(t *testing.T) {
+	const (
+		keyframeModel = "fal-ai/test/keyframe"
+		imageModel    = "fal-ai/test/image-to-video"
+		firstFrame    = "data:image/png;base64,AAA"
+		lastFrame     = "data:image/png;base64,BBB"
+		triageTask    = "generate_video with imageRole: 'keyframes' using @ast_1 as the opening frame and @img_2 as the closing frame"
+	)
+
+	run := func(t *testing.T, call HarnessToolCall, exec HarnessToolExecutionContext) (VideoGenerateRequest, []string, string, error) {
+		t.Helper()
+		config := defaultAppConfig()
+		config.Providers.Fal.VideoKeyframeModel = keyframeModel
+		config.Providers.Fal.VideoImageModel = imageModel
+		exec.Config = config
+		var captured VideoGenerateRequest
+		exec.GenerateVideo = func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error) {
+			captured = req
+			return GeneratedVideo{Data: []byte("mp4"), MimeType: "video/mp4", SourceURL: "https://example.com/v.mp4"}, nil
+		}
+		def := videoGenerationToolDefinition(AppConfig{}, false)
+		result, summary, err := def.Execute(context.Background(), exec, call)
+		var diags []string
+		if typed, ok := result.(ToolVideoResult); ok {
+			diags = typed.Diagnostics
+		}
+		return captured, diags, summary, err
+	}
+
+	t.Run("triage naming keyframes binds the dropped role", func(t *testing.T) {
+		req, diags, summary, err := run(t,
+			HarnessToolCall{Name: "generate_video", Content: "morph the first into the last"},
+			HarnessToolExecutionContext{
+				AttachedImages: []string{firstFrame, lastFrame},
+				TriageTask:     triageTask,
+			})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if !req.Keyframes {
+			t.Fatalf("captured.Keyframes = false, want the triage intent recovered")
+		}
+		if req.Model != keyframeModel {
+			t.Fatalf("captured.Model = %q, want the keyframe slot %q", req.Model, keyframeModel)
+		}
+		imgs := req.SourceImages()
+		if len(imgs) != 2 || imgs[0] != firstFrame || imgs[1] != lastFrame {
+			t.Fatalf("forwarded images = %v, want the ordered pair", imgs)
+		}
+		foundDiag := false
+		for _, d := range diags {
+			if strings.Contains(d, "imageRole") && strings.Contains(d, "triaged as a start→end transition") {
+				foundDiag = true
+			}
+		}
+		if !foundDiag {
+			t.Fatalf("diagnostics %v, want one naming the recovered role", diags)
+		}
+		if !strings.Contains(summary, "start→end transition") {
+			t.Fatalf("summary = %q, want it to name the transition", summary)
+		}
+	})
+
+	t.Run("openingFrame swaps the pair under recovery", func(t *testing.T) {
+		req, _, _, err := run(t,
+			HarnessToolCall{Name: "generate_video", Content: "morph", OpeningFrame: "second"},
+			HarnessToolExecutionContext{
+				AttachedImages: []string{firstFrame, lastFrame},
+				TriageTask:     triageTask,
+			})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if !req.Keyframes {
+			t.Fatalf("captured.Keyframes = false, want recovered")
+		}
+		imgs := req.SourceImages()
+		if len(imgs) != 2 || imgs[0] != lastFrame || imgs[1] != firstFrame {
+			t.Fatalf("forwarded images = %v, want the swapped pair", imgs)
+		}
+	})
+
+	t.Run("an explicit reference judgment wins over the triage prose", func(t *testing.T) {
+		req, diags, summary, err := run(t,
+			HarnessToolCall{Name: "generate_video", Content: "a new scene with these characters", UseVideoAs: "reference"},
+			HarnessToolExecutionContext{
+				AttachedImages: []string{firstFrame, lastFrame},
+				TriageTask:     triageTask,
+			})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if req.Keyframes {
+			t.Fatalf("captured.Keyframes = true, want useVideoAs:\"reference\" to suppress the recovery")
+		}
+		if req.Model != imageModel {
+			t.Fatalf("captured.Model = %q, want the image-to-video slot %q", req.Model, imageModel)
+		}
+		if len(diags) != 0 {
+			t.Fatalf("diagnostics = %v, want none without the recovery", diags)
+		}
+		if strings.Contains(summary, "transition") {
+			t.Fatalf("summary = %q, want the reference phrasing", summary)
+		}
+	})
+
+	t.Run("an explicit source wins over the triage prose", func(t *testing.T) {
+		req, _, _, err := run(t,
+			HarnessToolCall{Name: "generate_video", Content: "animate", Source: "image"},
+			HarnessToolExecutionContext{
+				AttachedImages: []string{firstFrame, lastFrame},
+				TriageTask:     triageTask,
+			})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if req.Keyframes {
+			t.Fatalf("captured.Keyframes = true, want source:\"image\" to suppress the recovery")
+		}
+	})
+
+	t.Run("a triage task without the transition vocabulary does not bind", func(t *testing.T) {
+		req, _, _, err := run(t,
+			HarnessToolCall{Name: "generate_video", Content: "a drone shot"},
+			HarnessToolExecutionContext{
+				AttachedImages: []string{firstFrame, lastFrame},
+				TriageTask:     "generate_video for a cinematic aerial establishing shot",
+			})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if req.Keyframes {
+			t.Fatalf("captured.Keyframes = true, want no recovery without the keyframes wording")
+		}
+	})
+
+	t.Run("an empty triage task does not bind", func(t *testing.T) {
+		req, _, _, err := run(t,
+			HarnessToolCall{Name: "generate_video", Content: "a drone shot"},
+			HarnessToolExecutionContext{AttachedImages: []string{firstFrame, lastFrame}})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if req.Keyframes {
+			t.Fatalf("captured.Keyframes = true, want no recovery on the direct path (no triage)")
+		}
+	})
+
+	t.Run("an attached video keeps the motion-control diagnosis", func(t *testing.T) {
+		req, _, _, err := run(t,
+			HarnessToolCall{Name: "generate_video", Content: "move"},
+			HarnessToolExecutionContext{
+				AttachedImages: []string{firstFrame, lastFrame},
+				AttachedVideos: []string{"data:video/mp4;base64,CCC"},
+				TriageTask:     triageTask,
+			})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if req.Keyframes {
+			t.Fatalf("captured.Keyframes = true, want no recovery beside an attached video")
+		}
+	})
+
+	t.Run("three attached images do not recover", func(t *testing.T) {
+		// The recovery requires the two-image shape; a wider set is not a
+		// transition ask, so the default reference diagnosis stands. Only a
+		// PLANNER-passed keyframes flag trips the two-image guard.
+		req, diags, _, err := run(t,
+			HarnessToolCall{Name: "generate_video", Content: "morph"},
+			HarnessToolExecutionContext{
+				AttachedImages: []string{firstFrame, lastFrame, "data:image/png;base64,DDD"},
+				TriageTask:     triageTask,
+			})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if req.Keyframes {
+			t.Fatalf("captured.Keyframes = true, want no recovery off the two-image shape")
+		}
+		if len(diags) != 0 {
+			t.Fatalf("diagnostics = %v, want none without the recovery", diags)
+		}
+	})
+}
+
+// TestGenerateVideoKeyframesSlotFallback pins the frame-less keyframes-pin
+// fallback (conv_c10e9937ac0dba41911a64f5): the recovered transition landed on
+// the pinned keyframes model, whose schema declares no frame fields, degraded
+// to loose references, and the paid clip again ignored the end frame. The
+// resolver now refuses such a request before any money moves
+// (errFalKeyframesUnsupported) and the executor retargets the transition onto
+// the frame-capable image-to-video slot once, under a notice naming the swap.
+func TestGenerateVideoKeyframesSlotFallback(t *testing.T) {
+	const (
+		refusedModel = "fal-ai/test/keyframe-frameless"
+		imageModel   = "fal-ai/test/image-to-video"
+		firstFrame   = "data:image/png;base64,AAA"
+		lastFrame    = "data:image/png;base64,BBB"
+		triageTask   = "generate_video with imageRole:\"keyframes\", openingFrame:\"first\""
+	)
+
+	t.Run("a refused transition retargets onto the image-to-video slot", func(t *testing.T) {
+		var requests []VideoGenerateRequest
+		config := defaultAppConfig()
+		config.Providers.Fal.VideoKeyframeModel = refusedModel
+		config.Providers.Fal.VideoImageModel = imageModel
+		def := videoGenerationToolDefinition(AppConfig{}, false)
+		exec := HarnessToolExecutionContext{
+			Config:         config,
+			AttachedImages: []string{firstFrame, lastFrame},
+			TriageTask:     triageTask,
+			GenerateVideo: func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error) {
+				requests = append(requests, req)
+				if req.Model == refusedModel {
+					return GeneratedVideo{}, fmt.Errorf("model %q: %w", req.Model, errFalKeyframesUnsupported)
+				}
+				return GeneratedVideo{Data: []byte("mp4"), MimeType: "video/mp4", SourceURL: "https://example.com/v.mp4"}, nil
+			},
+		}
+		result, summary, err := def.Execute(context.Background(), exec,
+			HarnessToolCall{Name: "generate_video", Content: "morph the first into the last"})
+		if err != nil {
+			t.Fatalf("expected the fallback to succeed, got %v", err)
+		}
+		if len(requests) != 2 {
+			t.Fatalf("GenerateVideo calls = %d, want the refused attempt plus the fallback", len(requests))
+		}
+		if requests[0].Model != refusedModel || requests[1].Model != imageModel {
+			t.Fatalf("call models = [%q, %q], want %q then %q", requests[0].Model, requests[1].Model, refusedModel, imageModel)
+		}
+		if !requests[1].Keyframes {
+			t.Fatalf("fallback request lost the keyframes flag")
+		}
+		imgs := requests[1].SourceImages()
+		if len(imgs) != 2 || imgs[0] != firstFrame || imgs[1] != lastFrame {
+			t.Fatalf("fallback images = %v, want the ordered pair", imgs)
+		}
+		typed, ok := result.(ToolVideoResult)
+		if !ok {
+			t.Fatalf("result type %T, want ToolVideoResult", result)
+		}
+		found := false
+		for _, n := range typed.Notices {
+			if strings.Contains(n, "ran on the image-to-video model") && strings.Contains(n, "Settings") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("notices = %v, want one naming the fallback swap and remedy", typed.Notices)
+		}
+		if typed.Model != imageModel {
+			t.Fatalf("result model = %q, want the fallback %q", typed.Model, imageModel)
+		}
+		if !strings.Contains(summary, "start→end transition") || !strings.Contains(summary, imageModel) {
+			t.Fatalf("summary = %q, want the transition named on the fallback model", summary)
+		}
+	})
+
+	t.Run("a planner-specified model is respected with no retry", func(t *testing.T) {
+		calls := 0
+		config := defaultAppConfig()
+		config.Providers.Fal.VideoKeyframeModel = refusedModel
+		config.Providers.Fal.VideoImageModel = imageModel
+		def := videoGenerationToolDefinition(AppConfig{}, false)
+		exec := HarnessToolExecutionContext{
+			Config:         config,
+			AttachedImages: []string{firstFrame, lastFrame},
+			GenerateVideo: func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error) {
+				calls++
+				return GeneratedVideo{}, fmt.Errorf("model %q: %w", req.Model, errFalKeyframesUnsupported)
+			},
+		}
+		_, _, err := def.Execute(context.Background(), exec,
+			HarnessToolCall{Name: "generate_video", Content: "morph", ImageRole: "keyframes", Model: "fal-ai/planner-picked"})
+		if err == nil {
+			t.Fatalf("expected the refusal to surface, got nil")
+		}
+		if !errors.Is(err, errFalKeyframesUnsupported) {
+			t.Fatalf("error = %v, want the sentinel", err)
+		}
+		if calls != 1 {
+			t.Fatalf("GenerateVideo calls = %d, want exactly the planner-specified attempt", calls)
+		}
+	})
+
+	t.Run("a sibling video in the slots stands the retry down", func(t *testing.T) {
+		calls := 0
+		config := defaultAppConfig()
+		config.Providers.Fal.VideoKeyframeModel = refusedModel
+		config.Providers.Fal.VideoImageModel = imageModel
+		def := videoGenerationToolDefinition(AppConfig{}, false)
+		exec := HarnessToolExecutionContext{
+			Config:         config,
+			AttachedImages: []string{firstFrame, lastFrame},
+			AttachedVideos: []string{"data:video/mp4;base64,CCC"},
+			GenerateVideo: func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error) {
+				calls++
+				return GeneratedVideo{}, fmt.Errorf("model %q: %w", req.Model, errFalKeyframesUnsupported)
+			},
+		}
+		_, _, err := def.Execute(context.Background(), exec,
+			HarnessToolCall{Name: "generate_video", Content: "morph", ImageRole: "keyframes"})
+		if err == nil {
+			t.Fatalf("expected the refusal to surface, got nil")
+		}
+		if calls != 1 {
+			t.Fatalf("GenerateVideo calls = %d, want no retry beside a sibling clip", calls)
+		}
+	})
+
+	t.Run("a fallback that refuses too returns the combined remedy", func(t *testing.T) {
+		config := defaultAppConfig()
+		config.Providers.Fal.VideoKeyframeModel = refusedModel
+		config.Providers.Fal.VideoImageModel = imageModel
+		def := videoGenerationToolDefinition(AppConfig{}, false)
+		exec := HarnessToolExecutionContext{
+			Config:         config,
+			AttachedImages: []string{firstFrame, lastFrame},
+			GenerateVideo: func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error) {
+				return GeneratedVideo{}, fmt.Errorf("model %q: %w", req.Model, errFalKeyframesUnsupported)
+			},
+		}
+		_, _, err := def.Execute(context.Background(), exec,
+			HarnessToolCall{Name: "generate_video", Content: "morph", ImageRole: "keyframes"})
+		if err == nil {
+			t.Fatalf("expected the combined refusal, got nil")
+		}
+		for _, want := range []string{refusedModel, imageModel, "Settings"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("error = %v, want it to name %q", err, want)
+			}
 		}
 	})
 }

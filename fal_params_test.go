@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1847,34 +1848,57 @@ func TestResolveVideoBodyKeyframesPopulateO1Fields(t *testing.T) {
 	}
 }
 
-func TestResolveVideoBodyKeyframesDegradesWithoutEndField(t *testing.T) {
+// TestResolveVideoBodyKeyframesRefusesWithoutEndField pins the pre-money
+// refusal: a keyframe turn on a model whose schema declares no end-frame field
+// cannot anchor a transition, and degrading — trimming to the start frame, or
+// letting both frames ride as loose references — bills a clip that does not end
+// at the frame the user named as the ending (conv_3bf4561b7c7dbb19316e2936 ran
+// the silent reference rebind; conv_c10e9937ac0dba41911a64f5 the honest-but-
+// still-wrong notice). Both shapes refuse with errFalKeyframesUnsupported: the
+// scalar-only kling i2v dialect and the reference-only minimax/h3 dialect.
+func TestResolveVideoBodyKeyframesRefusesWithoutEndField(t *testing.T) {
 	req := VideoGenerateRequest{
 		Model:     "fal-ai/kling-video/v2/master/image-to-video",
 		Prompt:    "morph",
 		Keyframes: true,
 		Images:    []string{"https://x/first.jpg", "https://x/last.jpg"},
 	}
-	body, notices, _, err := resolveVideoBody(loadSchema(t, "kling-image-to-video"), req, builtinFalOverrides())
+	_, _, _, err := resolveVideoBody(loadSchema(t, "kling-image-to-video"), req, builtinFalOverrides())
+	if !errors.Is(err, errFalKeyframesUnsupported) {
+		t.Fatalf("expected errFalKeyframesUnsupported for a scalar-only keyframe model, got %v", err)
+	}
+
+	reference := VideoGenerateRequest{
+		Model:     "minimax/h3/reference-to-video",
+		Prompt:    "morph the first frame into the second",
+		Keyframes: true,
+		Images:    []string{"https://x/first.jpg", "https://x/last.jpg"},
+	}
+	_, _, _, err = resolveVideoBody(loadSchema(t, "minimax-h3-reference-to-video"), reference, builtinFalOverrides())
+	if !errors.Is(err, errFalKeyframesUnsupported) {
+		t.Fatalf("expected errFalKeyframesUnsupported for a reference-only keyframe model, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "minimax/h3/reference-to-video") {
+		t.Fatalf("error = %v, want it to name the refusing model", err)
+	}
+
+	// A single-frame animate turn on the same reference-only model is
+	// untouched: the refusal is keyframe-mode only.
+	solo := VideoGenerateRequest{
+		Model:  "minimax/h3/reference-to-video",
+		Prompt: "animate",
+		Images: []string{"https://x/only.jpg"},
+	}
+	body, notices, _, err := resolveVideoBody(loadSchema(t, "minimax-h3-reference-to-video"), solo, builtinFalOverrides())
 	if err != nil {
-		t.Fatalf("resolveVideoBody error: %v", err)
+		t.Fatalf("resolveVideoBody (plain image-to-video) error: %v", err)
 	}
-	// The builtin override routes Kling's source image onto an image_urls list
-	// (its runtime rejects the scalar image_url its schema declares), so the
-	// opening frame lands there as a one-element slice — and only the opening
-	// frame, since the keyframe branch trimmed the closing frame off.
-	imgs, ok := body["image_urls"].([]any)
-	if !ok || len(imgs) != 1 || imgs[0] != "https://x/first.jpg" {
-		t.Fatalf("image_urls = %v, want a one-element list holding the first image only", body["image_urls"])
+	imgs, ok := body["reference_image_urls"].([]any)
+	if !ok || len(imgs) != 1 || imgs[0] != "https://x/only.jpg" {
+		t.Fatalf("reference_image_urls = %v, want the single frame", body["reference_image_urls"])
 	}
-	if _, ok := body["end_image_url"]; ok {
-		t.Fatal("end_image_url should be absent on a model without an end-frame field")
-	}
-	if _, ok := body["tail_image_url"]; ok {
-		t.Fatal("tail_image_url should be absent — the kling fixture declares no end-frame field")
-	}
-	joined := strings.Join(notices, " ")
-	if !strings.Contains(joined, "end-frame") {
-		t.Fatalf("expected a degradation notice mentioning end-frame, got %v", notices)
+	if len(notices) != 0 {
+		t.Fatalf("notices = %v, want none outside keyframe mode", notices)
 	}
 }
 

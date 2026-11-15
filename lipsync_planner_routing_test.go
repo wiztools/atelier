@@ -225,6 +225,30 @@ func TestPlannerMediaRoutingGuidanceIncludesDurationNote(t *testing.T) {
 	}
 }
 
+// TestPlannerMediaRoutingGuidanceIncludesKeyframesNote is the regression for
+// conv_3bf4561b7c7dbb19316e2936: triage routed the turn as a two-frame
+// transition, but the planner authored the generate_video call without
+// imageRole — only prompt prose — and the executor's default diagnosis sent
+// both frames as loose reference media, so the paid clip's ending was never
+// anchored to the frame the user named as the end. A transition is a
+// structured role like the duration: it must ride the call, and the note
+// rides generate_video only.
+func TestPlannerMediaRoutingGuidanceIncludesKeyframesNote(t *testing.T) {
+	got := plannerMediaRoutingGuidance(newPlannerRegistry(false))
+	if !strings.Contains(got, "A start→end transition is a parameter, not prose") {
+		t.Fatalf("guidance must teach the keyframes role rule, got %q", got)
+	}
+	if !strings.Contains(got, `imageRole:"keyframes"`) {
+		t.Fatalf("the rule should name the parameter, got %q", got)
+	}
+	if !strings.Contains(got, `openingFrame:"second"`) {
+		t.Fatalf("the rule should carry the opening-frame example, got %q", got)
+	}
+	if got := plannerMediaRoutingGuidance(newHarnessToolRegistry([]HarnessToolDefinition{{Name: "generate_image"}})); strings.Contains(got, "start→end transition") {
+		t.Fatalf("generate_image takes no keyframes role; the note must stay out, got %q", got)
+	}
+}
+
 // TestPlannerMediaRoutingGuidancePromptCompletenessRule pins the
 // conv_f20d9814014b5f5204178459 rule: the user asked for "no lip movement",
 // the planner read it as a tool-choice reason, and the generate_video prompt

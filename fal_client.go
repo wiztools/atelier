@@ -45,7 +45,11 @@ const (
 	// image-to-video, whose schema declares end_image_url: "the generated video
 	// will transition from the starting image to this ending image." The first
 	// attached image is the opening frame (image_url), the last the closing
-	// frame (end_image_url), both mapped by resolveVideoBody.
+	// frame (end_image_url), both mapped by resolveVideoBody. A pinned slot
+	// model that declares no frame fields refuses the keyframe request before
+	// any money moves (resolveVideoBody's errFalKeyframesUnsupported), and the
+	// tool layer retargets the transition onto the frame-capable image-to-video
+	// slot under a notice — this default is the fallback's fallback.
 	defaultFalVideoKeyframeModel = "fal-ai/bytedance/seedance-2.0/image-to-video"
 	// defaultFalVideoUpscaleModel is the video upscaler endpoint used when none
 	// is configured — the video sibling of defaultFalUpscaleModel: a simple,
