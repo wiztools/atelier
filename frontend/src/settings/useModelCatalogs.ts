@@ -10,6 +10,7 @@ import {
   ListFalVideoUpscaleModels,
   ListFalVideoReframeModels,
   ListFalVideoRestyleModels,
+  ListFalVideoCharacterModels,
   ListFalSpeechModels,
   ListFalSoundEffectModels,
   ListFalAudioExtendModels,
@@ -76,6 +77,7 @@ function useModelCatalogs() {
   const [falVideoUpscaleModels, setFalVideoUpscaleModels] = useState<main.FalModel[]>([]);
   const [falVideoReframeModels, setFalVideoReframeModels] = useState<main.FalModel[]>([]);
   const [falVideoRestyleModels, setFalVideoRestyleModels] = useState<main.FalModel[]>([]);
+  const [falVideoCharacterModels, setFalVideoCharacterModels] = useState<main.FalModel[]>([]);
   const [falAudioModels, setFalAudioModels] = useState<main.FalModel[]>([]);
   const [falSoundEffectModels, setFalSoundEffectModels] = useState<main.FalModel[]>([]);
   const [falSoundEffectsVideoModels, setFalSoundEffectsVideoModels] = useState<main.FalModel[]>([]);
@@ -131,6 +133,7 @@ function useModelCatalogs() {
     setFalVideoUpscaleModels([]);
     setFalVideoReframeModels([]);
     setFalVideoRestyleModels([]);
+    setFalVideoCharacterModels([]);
     setFalAudioModels([]);
     setFalSoundEffectModels([]);
     setFalSoundEffectsVideoModels([]);
@@ -238,6 +241,11 @@ function useModelCatalogs() {
       setFalVideoRestyleModels(await falCatalogWithRetry(ListFalVideoRestyleModels));
     } catch {
       setFalVideoRestyleModels([]);
+    }
+    try {
+      setFalVideoCharacterModels(await falCatalogWithRetry(ListFalVideoCharacterModels));
+    } catch {
+      setFalVideoCharacterModels([]);
     }
     try {
       setFalAudioModels(await falCatalogWithRetry(ListFalSpeechModels));
@@ -471,6 +479,7 @@ function useModelCatalogs() {
     falVideoMotionModels,
     falVideoReframeModels,
     falVideoRestyleModels,
+    falVideoCharacterModels,
     falVideoUpscaleModels,
     falVoiceDesignModels,
     openaiCompatibleModelOptions,

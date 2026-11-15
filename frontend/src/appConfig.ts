@@ -28,6 +28,7 @@ import {
   defaultFalVideoMotionModel,
   defaultFalVideoReframeModel,
   defaultFalVideoRestyleModel,
+  defaultFalVideoCharacterModel,
   defaultFalVideoUpscaleModel,
   defaultFalVoiceDesignModel,
   defaultImageAspectRatio,
@@ -137,6 +138,7 @@ function configValues(config: main.AppConfig) {
   const nextFalVideoUpscaleModel = config.providers?.fal?.videoUpscaleModel || defaultFalVideoUpscaleModel;
   const nextFalVideoReframeModel = config.providers?.fal?.videoReframeModel || defaultFalVideoReframeModel;
   const nextFalVideoRestyleModel = config.providers?.fal?.videoRestyleModel || defaultFalVideoRestyleModel;
+  const nextFalVideoCharacterModel = config.providers?.fal?.videoCharacterModel || defaultFalVideoCharacterModel;
   const nextFalAudioModel = config.providers?.fal?.audioModel || defaultFalAudioModel;
   const nextFalAudioCloneModel = config.providers?.fal?.audioCloneModel || defaultFalAudioCloneModel;
   const nextFalSoundEffectsModel = config.providers?.fal?.soundEffectsModel || defaultFalSoundEffectsModel;
@@ -240,6 +242,7 @@ function configValues(config: main.AppConfig) {
     falVideoUpscaleModel: nextFalVideoUpscaleModel,
     falVideoReframeModel: nextFalVideoReframeModel,
     falVideoRestyleModel: nextFalVideoRestyleModel,
+    falVideoCharacterModel: nextFalVideoCharacterModel,
     falAudioModel: nextFalAudioModel,
     falAudioCloneModel: nextFalAudioCloneModel,
     falSoundEffectsModel: nextFalSoundEffectsModel,
@@ -315,6 +318,7 @@ function appConfigPayload(s: AppConfigValues & ConfigKeyFlags) {
         videoUpscaleModel: s.falVideoUpscaleModel,
         videoReframeModel: s.falVideoReframeModel,
         videoRestyleModel: s.falVideoRestyleModel,
+        videoCharacterModel: s.falVideoCharacterModel,
         audioModel: s.falAudioModel,
         soundEffectsModel: s.falSoundEffectsModel,
         soundEffectsVideoModel: s.falSoundEffectsVideoModel,

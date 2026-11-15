@@ -89,6 +89,33 @@ type VideoRestyleRequest struct {
 	Resolution     string   `json:"resolution,omitempty"`
 }
 
+// CharacterReference is one person a replace_character call swaps into the
+// source clip: Images[0] is the frontal view and any further entries are extra
+// angles from the same character sheet.
+type CharacterReference struct {
+	Images []string `json:"images"`
+}
+
+// VideoCharacterReplaceRequest is the input to a character replacement — the
+// replace_character tool's canonical request. Video is the source clip whose
+// scene, camera, and performance are kept; Characters lists the people to swap
+// in, in the order the model maps them (left to right on Recast). Prompt is an
+// optional steer (who becomes whom, what else to keep). KeepAudio is nil when
+// the planner expressed no opinion; resolveCharacterReplaceBody then keeps the
+// source soundtrack wherever the model has the toggle.
+type VideoCharacterReplaceRequest struct {
+	Model      string               `json:"model"`
+	Video      string               `json:"video"`
+	Characters []CharacterReference `json:"characters"`
+	Prompt     string               `json:"prompt,omitempty"`
+	Resolution string               `json:"resolution,omitempty"`
+	KeepAudio  *bool                `json:"keepAudio,omitempty"`
+	// SourceSeconds is the source clip's measured duration (0 when it could
+	// not be read). The resolver refuses a clip outside the model's documented
+	// input window before any money moves.
+	SourceSeconds float64 `json:"sourceSeconds,omitempty"`
+}
+
 // VideoGenerateRequest is the input to a video generation (text-to-video,
 // image-to-video, multi-image reference-to-video, or video extend). The
 // canonical params here are mapped onto the model's native fields by

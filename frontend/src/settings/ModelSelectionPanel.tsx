@@ -17,6 +17,7 @@ import {
   defaultFalVideoKeyframeModel,
   defaultFalVideoExtendModel,
   defaultFalVideoMotionModel,
+  defaultFalVideoCharacterModel,
   defaultFalVideoUpscaleModel,
   defaultFalVideoReframeModel,
   defaultFalVideoRestyleModel,
@@ -246,6 +247,7 @@ type ModelSelectionValue = {
   falVideoKeyframeModel: string;
   falVideoExtendModel: string;
   falVideoMotionModel: string;
+  falVideoCharacterModel: string;
   falVideoUpscaleModel: string;
   falVideoReframeModel: string;
   falVideoRestyleModel: string;
@@ -320,6 +322,7 @@ function overrideKeysFromRecord(overrides: main.ConversationModelOverrides | nul
   if (overrides.videoKeyframeModel) keys.add('videoKeyframeModel');
   if (overrides.videoExtendModel) keys.add('videoExtendModel');
   if (overrides.videoMotionModel) keys.add('videoMotionModel');
+  if (overrides.videoCharacterModel) keys.add('videoCharacterModel');
   if (overrides.videoUpscaleModel) keys.add('videoUpscaleModel');
   if (overrides.videoReframeModel) keys.add('videoReframeModel');
   if (overrides.videoRestyleModel) keys.add('videoRestyleModel');
@@ -388,6 +391,7 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
   if (keys.has('videoKeyframeModel')) payload.videoKeyframeModel = draft.falVideoKeyframeModel;
   if (keys.has('videoExtendModel')) payload.videoExtendModel = draft.videoProvider === 'replicate' ? draft.replicateVideoExtendModel : draft.videoProvider === 'runware' ? draft.runwareVideoExtendModel : draft.falVideoExtendModel;
   if (keys.has('videoMotionModel')) payload.videoMotionModel = draft.falVideoMotionModel;
+  if (keys.has('videoCharacterModel')) payload.videoCharacterModel = draft.falVideoCharacterModel;
   if (keys.has('videoUpscaleModel')) payload.videoUpscaleModel = draft.videoProvider === 'replicate' ? draft.replicateVideoUpscaleModel : draft.videoProvider === 'runware' ? draft.runwareVideoUpscaleModel : draft.falVideoUpscaleModel;
   if (keys.has('videoReframeModel')) payload.videoReframeModel = draft.videoProvider === 'replicate' ? draft.replicateVideoReframeModel : draft.falVideoReframeModel;
   if (keys.has('videoRestyleModel')) payload.videoRestyleModel = draft.videoProvider === 'replicate' ? draft.replicateVideoRestyleModel : draft.videoProvider === 'runware' ? draft.runwareVideoRestyleModel : draft.falVideoRestyleModel;
@@ -488,6 +492,7 @@ function ModelSelectionPanel({
     falVideoKeyframeModels: main.FalModel[];
     falVideoExtendModels: main.FalModel[];
     falVideoMotionModels: main.FalModel[];
+    falVideoCharacterModels: main.FalModel[];
     falVideoUpscaleModels: main.FalModel[];
     falVideoReframeModels: main.FalModel[];
     falVideoRestyleModels: main.FalModel[];
@@ -575,6 +580,7 @@ function ModelSelectionPanel({
   const falVideoKeyframeOptions = falModelOptionList(catalogs.falVideoKeyframeModels);
   const falVideoExtendOptions = falModelOptionList(catalogs.falVideoExtendModels);
   const falVideoMotionOptions = falModelOptionList(catalogs.falVideoMotionModels);
+  const falVideoCharacterOptions = falModelOptionList(catalogs.falVideoCharacterModels);
   const falVideoUpscaleOptions = falModelOptionList(catalogs.falVideoUpscaleModels);
   const falVideoReframeOptions = falModelOptionList(catalogs.falVideoReframeModels);
   const falVideoRestyleOptions = falModelOptionList(catalogs.falVideoRestyleModels);
@@ -1383,7 +1389,13 @@ function ModelSelectionPanel({
 
           <div className="two-column">
             <div className="field">
-              {fieldLabel('fal-video-motion-model', 'Motion-Control Model (fal.ai)', 'videoMotionModel')}
+              <div className="field-label-row">
+                {fieldLabel('fal-video-motion-model', 'Motion-Control Model (fal.ai)', 'videoMotionModel')}
+                <InfoHint
+                  label="Motion control"
+                  text="Animates an attached IMAGE using the motion of an attached video. The result keeps the image's character, setting, and framing; the video only supplies the movement (and, on DreamActor, facial expressions and lip movement). Used by video generation when you attach an image and a video together. To keep the video's own scene and swap the person in it, use Character Replacement below instead."
+                />
+              </div>
               <ModelCombobox
                 id="fal-video-motion-model"
                 ariaLabel="fal.ai motion-control model"
@@ -1558,6 +1570,27 @@ function ModelSelectionPanel({
             </div>
           </div>
           )}
+
+          <div className="two-column">
+            <div className="field">
+              <div className="field-label-row">
+                {fieldLabel('fal-video-character-model', 'Character-Replacement Model (fal.ai)', 'videoCharacterModel')}
+                <InfoHint
+                  label="Character replacement"
+                  text="Keeps an attached VIDEO — its setting, camera, motion, and performance — and swaps the person in it for the character in attached reference images (the replace_character tool's endpoint). The opposite of motion control, which keeps the image's scene and borrows only the video's movement. Runs on fal.ai whatever the Video Provider is. Recast replaces up to four people, one photo each; the Kling edit models take a character sheet (a front view plus up to three angles); Wan Animate Replace takes one image and no prompt. Source clips are capped by the model (3–10s on Kling o1, 5–30s on Recast). Motion control is different: it keeps the image's scene and borrows the clip's motion."
+                />
+              </div>
+              <ModelCombobox
+                id="fal-video-character-model"
+                ariaLabel="fal.ai character-replacement model"
+                placeholder={defaultFalVideoCharacterModel}
+                value={value.falVideoCharacterModel}
+                onChange={(next) => onChange({falVideoCharacterModel: next})}
+                options={falVideoCharacterOptions}
+                allowCustom
+              />
+            </div>
+          </div>
         </div>
       </section>
 

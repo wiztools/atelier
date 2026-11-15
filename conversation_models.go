@@ -55,6 +55,9 @@ type ConversationModelOverrides struct {
 	VideoUpscaleModel  string `json:"videoUpscaleModel,omitempty"`
 	VideoReframeModel  string `json:"videoReframeModel,omitempty"`
 	VideoRestyleModel  string `json:"videoRestyleModel,omitempty"`
+	// VideoCharacterModel overrides replace_character's endpoint. Fal-only (the
+	// tool does not follow VideoProvider), so it always lands on the fal slot.
+	VideoCharacterModel string `json:"videoCharacterModel,omitempty"`
 	// AudioModel overrides generate_speech's model. It lands on the slot the
 	// effective speech provider reads (the ImageModel pair's contract):
 	// SpeechProvider routes, so an ollama-pinned conversation stores the
@@ -134,7 +137,7 @@ func normalizeConversationModelOverrides(o ConversationModelOverrides) Conversat
 		&o.VideoProvider, &o.VideoModel, &o.VideoImageModel,
 		&o.ImageEditModel, &o.UpscaleModel,
 		&o.InpaintProvider, &o.InpaintModel,
-		&o.VideoExtendModel, &o.VideoMotionModel, &o.VideoKeyframeModel, &o.VideoUpscaleModel, &o.VideoReframeModel, &o.VideoRestyleModel,
+		&o.VideoExtendModel, &o.VideoMotionModel, &o.VideoKeyframeModel, &o.VideoUpscaleModel, &o.VideoReframeModel, &o.VideoRestyleModel, &o.VideoCharacterModel,
 		&o.SpeechProvider, &o.AudioModel, &o.SoundEffectsModel, &o.SoundEffectsVideoModel, &o.AudioCloneModel, &o.AudioExtendModel, &o.VoiceDesignModel, &o.TranscribeModel,
 		&o.LipsyncImageModel, &o.LipsyncVideoModel, &o.LipsyncProvider, &o.AudioProvider,
 		&o.TranscriptionProvider, &o.WhisperModel, &o.WhisperBinary, &o.WhisperVADModel,
@@ -494,6 +497,9 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 		default:
 			config.Providers.Fal.VideoRestyleModel = o.VideoRestyleModel
 		}
+	}
+	if o.VideoCharacterModel != "" {
+		config.Providers.Fal.VideoCharacterModel = o.VideoCharacterModel
 	}
 	if o.SpeechProvider != "" {
 		// The speech provider overrides generate_speech's backend directly —

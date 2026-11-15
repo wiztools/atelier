@@ -137,7 +137,7 @@ export function useAppModel() {
     configLoaded, defaultWorkspaceRoot, falAudioCloneModel, falAudioExtendModel, falAudioModel,
     falImageEditModel, falInpaintModel, falLipsyncImageModel, falLipsyncVideoModel, falModel,
     falSoundEffectsModel, falSoundEffectsVideoModel, falTranscribeModel, falUpscaleModel,
-    falVideoExtendModel, falVideoImageModel, falVideoKeyframeModel, falVideoModel, falVideoMotionModel,
+    falVideoExtendModel, falVideoImageModel, falVideoKeyframeModel, falVideoModel, falVideoMotionModel, falVideoCharacterModel,
     falVideoReframeModel, falVideoRestyleModel, falVideoUpscaleModel, falVoiceDesignModel, ffmpegBinary,
     ffprobeBinary, globalModelSelection, harnessModel, harnessModels, harnessProvider, imageAspectRatio,
     imageModel, imageProvider, imageSizePreset, imageSteps, inpaintProvider, lipsyncProvider, magickBinary,
@@ -180,6 +180,7 @@ export function useAppModel() {
     falVideoKeyframeModels,
     falVideoModels,
     falVideoMotionModels,
+    falVideoCharacterModels,
     falVideoReframeModels,
     falVideoRestyleModels,
     falVideoUpscaleModels,
@@ -862,6 +863,7 @@ export function useAppModel() {
       falVideoKeyframeModel: overrides.videoKeyframeModel || global.falVideoKeyframeModel,
       falVideoExtendModel: overrides.videoExtendModel && videoProvider !== 'replicate' ? overrides.videoExtendModel : global.falVideoExtendModel,
       falVideoMotionModel: overrides.videoMotionModel || global.falVideoMotionModel,
+      falVideoCharacterModel: overrides.videoCharacterModel || global.falVideoCharacterModel,
       falAudioModel: overrides.audioModel && speechProvider === 'fal' ? overrides.audioModel : global.falAudioModel,
       ollamaSpeechModel: overrides.audioModel && speechProvider === 'ollama' ? overrides.audioModel : global.ollamaSpeechModel,
       replicateSpeechModel: overrides.audioModel && speechProvider === 'replicate' ? overrides.audioModel : global.replicateSpeechModel,
@@ -1040,6 +1042,7 @@ export function useAppModel() {
       if (patch.falVideoKeyframeModel !== undefined) next.add('videoKeyframeModel');
       if (patch.falVideoExtendModel !== undefined || patch.replicateVideoExtendModel !== undefined) next.add('videoExtendModel');
       if (patch.falVideoMotionModel !== undefined) next.add('videoMotionModel');
+      if (patch.falVideoCharacterModel !== undefined) next.add('videoCharacterModel');
       if (patch.falVideoUpscaleModel !== undefined || patch.replicateVideoUpscaleModel !== undefined) next.add('videoUpscaleModel');
       if (patch.falVideoReframeModel !== undefined || patch.replicateVideoReframeModel !== undefined) next.add('videoReframeModel');
       if (patch.falVideoRestyleModel !== undefined || patch.replicateVideoRestyleModel !== undefined) next.add('videoRestyleModel');
@@ -1149,6 +1152,7 @@ export function useAppModel() {
           next.runwareVideoExtendModel = global.runwareVideoExtendModel;
           break;
         case 'videoMotionModel': next.falVideoMotionModel = global.falVideoMotionModel; break;
+        case 'videoCharacterModel': next.falVideoCharacterModel = global.falVideoCharacterModel; break;
         case 'videoUpscaleModel':
           next.falVideoUpscaleModel = global.falVideoUpscaleModel;
           next.replicateVideoUpscaleModel = global.replicateVideoUpscaleModel;
@@ -1436,6 +1440,7 @@ export function useAppModel() {
     falVideoKeyframeModels,
     falVideoExtendModels,
     falVideoMotionModels,
+    falVideoCharacterModels,
     falVideoUpscaleModels,
     falVideoReframeModels,
     falVideoRestyleModels,

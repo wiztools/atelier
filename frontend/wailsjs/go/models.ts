@@ -635,6 +635,7 @@ export namespace main {
 	    videoUpscaleModel?: string;
 	    videoReframeModel?: string;
 	    videoRestyleModel?: string;
+	    videoCharacterModel?: string;
 	    lipsyncImageModel?: string;
 	    lipsyncVideoModel?: string;
 	    soundEffectsVideoModel?: string;
@@ -664,6 +665,7 @@ export namespace main {
 	        this.videoUpscaleModel = source["videoUpscaleModel"];
 	        this.videoReframeModel = source["videoReframeModel"];
 	        this.videoRestyleModel = source["videoRestyleModel"];
+	        this.videoCharacterModel = source["videoCharacterModel"];
 	        this.lipsyncImageModel = source["lipsyncImageModel"];
 	        this.lipsyncVideoModel = source["lipsyncVideoModel"];
 	        this.soundEffectsVideoModel = source["soundEffectsVideoModel"];
@@ -1058,6 +1060,7 @@ export namespace main {
 	    videoUpscaleModel?: string;
 	    videoReframeModel?: string;
 	    videoRestyleModel?: string;
+	    videoCharacterModel?: string;
 	    speechProvider?: string;
 	    audioModel?: string;
 	    soundEffectsModel?: string;
@@ -1108,6 +1111,7 @@ export namespace main {
 	        this.videoUpscaleModel = source["videoUpscaleModel"];
 	        this.videoReframeModel = source["videoReframeModel"];
 	        this.videoRestyleModel = source["videoRestyleModel"];
+	        this.videoCharacterModel = source["videoCharacterModel"];
 	        this.speechProvider = source["speechProvider"];
 	        this.audioModel = source["audioModel"];
 	        this.soundEffectsModel = source["soundEffectsModel"];
@@ -2987,6 +2991,8 @@ export namespace main {
 	    lyrics?: string;
 	    cloneVoice?: boolean;
 	    preserveSpeech?: boolean;
+	    characterImageCounts?: number[];
+	    keepAudio?: boolean;
 	    previewText?: string;
 	    artifactId?: string;
 	    compareArtifactId?: string;
@@ -3059,6 +3065,8 @@ export namespace main {
 	        this.lyrics = source["lyrics"];
 	        this.cloneVoice = source["cloneVoice"];
 	        this.preserveSpeech = source["preserveSpeech"];
+	        this.characterImageCounts = source["characterImageCounts"];
+	        this.keepAudio = source["keepAudio"];
 	        this.previewText = source["previewText"];
 	        this.artifactId = source["artifactId"];
 	        this.compareArtifactId = source["compareArtifactId"];

@@ -426,7 +426,15 @@ func (a *App) ListFalVideoExtendModels() ([]FalModel, error) {
 // video-to-video category alongside extend and lip-sync, so the id and tags are
 // checked for "motion". Mirrors isFalVideoExtendModel / isFalLipsyncModel.
 func isFalVideoMotionModel(model FalModel) bool {
-	if strings.Contains(strings.ToLower(model.ID), "motion") {
+	id := strings.ToLower(model.ID)
+	if strings.Contains(id, "motion") {
+		return true
+	}
+	// DreamActor animates the reference image with a driving video's motion,
+	// face, and lips — the output keeps the IMAGE's scene, which is motion
+	// control's contract (its schema: "the reference image to animate", "the
+	// driving template video"), not character replacement's.
+	if strings.Contains(id, "dreamactor") {
 		return true
 	}
 	for _, tag := range model.Tags {
@@ -557,6 +565,7 @@ var falVideoOtherFamilyMarkers = []string{
 	"denoise", "deblur", "colorize", "colorization", "hdr", "relight", "recamera",
 	"sam-", "segment", "mask", "ffmpeg", "trim", "reverse", "blend",
 	"vton", "dreamactor", "realtime", "webrtc", "green-screen",
+	"recast", "animate/replace", "character-replace", "character-swap",
 	"clean-plate", "day-to-night", "water-simulation", "decompress", "sdr",
 }
 
@@ -588,6 +597,53 @@ func isFalVideoRestyleModel(model FalModel) bool {
 		}
 	}
 	return false
+}
+
+// falVideoCharacterMarkers are the id markers of a character-replacement
+// endpoint — one that keeps an attached clip's scene and performance while
+// swapping the person in it for a reference character: MiniMax H3 Max Recast,
+// Wan 2.2 Animate Replace, and the Kling o1/o3 video-to-video edit endpoints,
+// whose character "elements" (a frontal image plus extra angles) are the
+// character-sheet shape. The Kling edit ids also serve the restyle picker —
+// the same endpoint restyles or replaces depending on the prompt — so this
+// filter overlaps restyle's by design; the other families stay disjoint.
+var falVideoCharacterMarkers = []string{
+	"recast", "animate/replace", "character-replace", "character-swap", "video-to-video/edit",
+}
+
+// isFalVideoCharacterModel reports whether a fal catalog entry is a character
+// replacement endpoint. Motion-control shapes (DreamActor, Wan Motion) that
+// keep the reference IMAGE's scene are excluded — they belong to the motion
+// picker. Id-only, like the restyle markers: catalog tags are noisy here.
+func isFalVideoCharacterModel(model FalModel) bool {
+	id := strings.ToLower(model.ID)
+	if strings.Contains(id, "motion") || strings.Contains(id, "dreamactor") {
+		return false
+	}
+	for _, marker := range falVideoCharacterMarkers {
+		if strings.Contains(id, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// ListFalVideoCharacterModels returns fal's character-replacement catalog for
+// the Settings character-replacement-model picker (the replace_character
+// tool's endpoint), kept from the video-to-video category by
+// isFalVideoCharacterModel.
+func (a *App) ListFalVideoCharacterModels() ([]FalModel, error) {
+	models, err := a.cachedFalCategoryModels(falVideoToVideoCategory)
+	if err != nil {
+		return nil, err
+	}
+	character := make([]FalModel, 0, len(models))
+	for _, model := range models {
+		if isFalVideoCharacterModel(model) {
+			character = append(character, model)
+		}
+	}
+	return character, nil
 }
 
 // ListFalVideoRestyleModels returns fal's video-restyle catalog for the

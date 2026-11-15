@@ -146,6 +146,15 @@ type ConfigFal struct {
 	// video-to-video category by the general edit/style markers minus the other
 	// five families.
 	VideoRestyleModel string `json:"videoRestyleModel,omitempty"`
+	// VideoCharacterModel is the character-replacement endpoint used by the
+	// replace_character tool (fal-only, like VoiceDesignModel — it does not
+	// follow VideoProvider) — a video-to-video transform that keeps an attached
+	// clip's scene, camera, and performance while swapping the person in it for
+	// the character in attached reference images. Distinct from motion control
+	// (generate_video with an image + a video), which keeps the IMAGE's scene,
+	// and from restyle_video, which re-renders the whole look; the picker
+	// partitions fal's video-to-video category by the recast/replace markers.
+	VideoCharacterModel string `json:"videoCharacterModel,omitempty"`
 	// LipsyncImageModel is the audio-to-video lip sync endpoint used when the
 	// user attaches an audio clip plus an image (a talking head).
 	// LipsyncVideoModel is the video-to-video lip sync endpoint used when the

@@ -78,6 +78,19 @@ const (
 	// canonical prompt/resolution/references onto whichever endpoint is
 	// configured.
 	defaultFalVideoRestyleModel = "fal-ai/kling-video/o3/pro/video-to-video/edit"
+	// defaultFalVideoCharacterModel is the character-replacement endpoint the
+	// replace_character tool uses when none is configured — MiniMax H3 Max
+	// Recast swaps the main people in an attached clip for the people in
+	// reference photos (one photo per person, mapped left to right, up to
+	// four) while keeping the clip's scene, camera, motion, shot timing, and
+	// soundtrack (video_url + reference_image_urls required, 5–30s sources with
+	// no shot over 15s). Alternatives the picker surfaces: the Kling o1/o3
+	// video-to-video edit endpoints (a prompt plus character "elements" — a
+	// frontal image with up to three extra angles each, the character-sheet
+	// shape) and Wan 2.2 Animate Replace (one reference image, no prompt);
+	// resolveCharacterReplaceBody maps the canonical characters onto whichever
+	// endpoint is configured.
+	defaultFalVideoCharacterModel = "minimax/h3-max/recast"
 	// defaultFalAudioModel is the text-to-speech endpoint used by the
 	// generate_speech tool when none is configured.
 	defaultFalAudioModel = "fal-ai/elevenlabs/tts/multilingual-v2"

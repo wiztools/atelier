@@ -42,6 +42,8 @@ const defaultFalVideoMotionModel = 'fal-ai/kling-video/v2.6/pro/motion-control';
 const defaultFalVideoUpscaleModel = 'fal-ai/video-upscaler';
 const defaultFalVideoReframeModel = 'fal-ai/ltx-2.3/reframe';
 const defaultFalVideoRestyleModel = 'fal-ai/kling-video/o3/pro/video-to-video/edit';
+// Mirrors defaultFalVideoCharacterModel (fal_client.go): replace_character's endpoint.
+const defaultFalVideoCharacterModel = 'minimax/h3-max/recast';
 const defaultFalAudioModel = 'fal-ai/elevenlabs/tts/multilingual-v2';
 // The Ollama speech slot's placeholder — the Go resolver's belt
 // (defaultOllamaSpeechModel); the picker lists whatever "speech"-capable
@@ -245,6 +247,7 @@ export {
   defaultFalVideoUpscaleModel,
   defaultFalVideoReframeModel,
   defaultFalVideoRestyleModel,
+  defaultFalVideoCharacterModel,
   defaultFalAudioModel,
   defaultOllamaSpeechModel,
   defaultFalAudioCloneModel,

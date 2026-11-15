@@ -266,6 +266,14 @@ type HarnessToolCall struct {
 	// against the model's schema and dropped-with-notice when the configured
 	// endpoint has no speech-preservation control. See soundEffectsVideoParamSchema.
 	PreserveSpeech *bool `json:"preserveSpeech,omitempty"`
+	// CharacterImageCounts is an optional replace_character input: how many of
+	// the attached images belong to each person being replaced, in left-to-right
+	// order (e.g. [2,1]). Empty means every image is one character's sheet.
+	CharacterImageCounts []int `json:"characterImageCounts,omitempty"`
+	// KeepAudio is an optional replace_character input. Nil keeps the clip's
+	// soundtrack wherever the model has the toggle; false drops it. A pointer
+	// for the same reason CloneVoice is.
+	KeepAudio *bool `json:"keepAudio,omitempty"`
 	// PreviewText is an optional generate_voice input: the line the designed
 	// voice's preview clip speaks (MiniMax voice-design requires one). Empty
 	// applies the tool's default preview line. Planner-only, like Voice — see
@@ -2880,6 +2888,11 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 						// toggle (Mirelo SFX). Omitted for the model's own
 						// default; false asks for sound effects only.
 						"preserveSpeech": map[string]any{"type": "boolean"},
+						// replace_character inputs: how many attached images
+						// belong to each person being replaced (left to right),
+						// and the soundtrack toggle.
+						"characterImageCounts": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}},
+						"keepAudio":            map[string]any{"type": "boolean"},
 					},
 				},
 			},
@@ -3563,6 +3576,11 @@ func setToolCallField(call *HarnessToolCall, key, raw string) {
 	case "preserve_speech", "preserveSpeech":
 		preserve := raw == "true"
 		call.PreserveSpeech = &preserve
+	case "keep_audio", "keepAudio":
+		keep := raw == "true"
+		call.KeepAudio = &keep
+	case "character_image_counts", "characterImageCounts":
+		call.CharacterImageCounts = parseCharacterImageCounts(raw)
 	case "append":
 		call.Append = raw == "true"
 	case "overwrite":

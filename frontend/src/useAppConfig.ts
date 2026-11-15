@@ -19,6 +19,7 @@ import {
   defaultFalVideoKeyframeModel,
   defaultFalVideoExtendModel,
   defaultFalVideoMotionModel,
+  defaultFalVideoCharacterModel,
   defaultFalVideoUpscaleModel,
   defaultFalVideoReframeModel,
   defaultFalVideoRestyleModel,
@@ -158,6 +159,7 @@ function useAppConfig({openRouterHasKey, falHasKey, replicateHasKey, runwareHasK
   const [falVideoKeyframeModel, setFalVideoKeyframeModel] = useState(defaultFalVideoKeyframeModel);
   const [falVideoExtendModel, setFalVideoExtendModel] = useState(defaultFalVideoExtendModel);
   const [falVideoMotionModel, setFalVideoMotionModel] = useState(defaultFalVideoMotionModel);
+  const [falVideoCharacterModel, setFalVideoCharacterModel] = useState(defaultFalVideoCharacterModel);
   const [falVideoUpscaleModel, setFalVideoUpscaleModel] = useState(defaultFalVideoUpscaleModel);
   const [falVideoReframeModel, setFalVideoReframeModel] = useState(defaultFalVideoReframeModel);
   const [falVideoRestyleModel, setFalVideoRestyleModel] = useState(defaultFalVideoRestyleModel);
@@ -268,7 +270,7 @@ function useAppConfig({openRouterHasKey, falHasKey, replicateHasKey, runwareHasK
         replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel,
         replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel,
         falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel,
-        falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel,
+        falVideoExtendModel, falVideoMotionModel, falVideoCharacterModel, falVideoUpscaleModel, falVideoReframeModel,
         falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel,
         falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, falTranscribeModel,
         replicateTranscribeModel, transcriptionProvider, whisperModel, whisperBinary, whisperVADModel,
@@ -283,7 +285,7 @@ function useAppConfig({openRouterHasKey, falHasKey, replicateHasKey, runwareHasK
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [airplaneMode, baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, inpaintProvider, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, runwareHasKey, replicateModel, runwareModel, runwareImageEditModel, runwareUpscaleModel, runwareVideoModel, runwareVideoImageModel, runwareVideoExtendModel, runwareVideoUpscaleModel, runwareVideoRestyleModel, runwareInpaintModel, runwareLipsyncImageModel, runwareLipsyncVideoModel, runwareSpeechModel, runwareTranscribeModel, runwareSoundEffectsModel, runwareSoundEffectsVideoModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, replicateTranscribeModel, replicateLipsyncImageModel, replicateLipsyncVideoModel, lipsyncProvider, speechProvider, ollamaSpeechModel, replicateSpeechModel, audioProvider, replicateSoundEffectsModel, replicateSoundEffectsVideoModel, replicateAudioExtendModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, audioExtendDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel, whisperVADModel, whisperChunkMinutes]);
+  }, [airplaneMode, baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoCharacterModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, inpaintProvider, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, runwareHasKey, replicateModel, runwareModel, runwareImageEditModel, runwareUpscaleModel, runwareVideoModel, runwareVideoImageModel, runwareVideoExtendModel, runwareVideoUpscaleModel, runwareVideoRestyleModel, runwareInpaintModel, runwareLipsyncImageModel, runwareLipsyncVideoModel, runwareSpeechModel, runwareTranscribeModel, runwareSoundEffectsModel, runwareSoundEffectsVideoModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, replicateTranscribeModel, replicateLipsyncImageModel, replicateLipsyncVideoModel, lipsyncProvider, speechProvider, ollamaSpeechModel, replicateSpeechModel, audioProvider, replicateSoundEffectsModel, replicateSoundEffectsVideoModel, replicateAudioExtendModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, audioExtendDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel, whisperVADModel, whisperChunkMinutes]);
 
   const globalModelSelection = useMemo<ModelSelectionValue>(() => ({
     primaryProvider,
@@ -336,6 +338,7 @@ function useAppConfig({openRouterHasKey, falHasKey, replicateHasKey, runwareHasK
     falVideoKeyframeModel,
     falVideoExtendModel,
     falVideoMotionModel,
+    falVideoCharacterModel,
     falVideoUpscaleModel,
     falVideoReframeModel,
     falVideoRestyleModel,
@@ -360,7 +363,7 @@ function useAppConfig({openRouterHasKey, falHasKey, replicateHasKey, runwareHasK
     videoResolution,
     soundDuration,
     audioExtendDuration,
-  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, inpaintProvider, falModel, openaiCompatibleModel, replicateModel, runwareModel, runwareImageEditModel, runwareUpscaleModel, runwareVideoModel, runwareVideoImageModel, runwareVideoExtendModel, runwareVideoUpscaleModel, runwareVideoRestyleModel, runwareInpaintModel, runwareLipsyncImageModel, runwareLipsyncVideoModel, runwareSpeechModel, runwareTranscribeModel, runwareSoundEffectsModel, runwareSoundEffectsVideoModel, replicateImageEditModel, replicateUpscaleModel, falImageEditModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, transcriptionProvider, audioProvider, replicateSoundEffectsModel, replicateSoundEffectsVideoModel, replicateAudioExtendModel, falTranscribeModel, replicateTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, replicateLipsyncImageModel, replicateLipsyncVideoModel, lipsyncProvider, speechProvider, ollamaSpeechModel, replicateSpeechModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, audioExtendDuration]);
+  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, inpaintProvider, falModel, openaiCompatibleModel, replicateModel, runwareModel, runwareImageEditModel, runwareUpscaleModel, runwareVideoModel, runwareVideoImageModel, runwareVideoExtendModel, runwareVideoUpscaleModel, runwareVideoRestyleModel, runwareInpaintModel, runwareLipsyncImageModel, runwareLipsyncVideoModel, runwareSpeechModel, runwareTranscribeModel, runwareSoundEffectsModel, runwareSoundEffectsVideoModel, replicateImageEditModel, replicateUpscaleModel, falImageEditModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoCharacterModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, transcriptionProvider, audioProvider, replicateSoundEffectsModel, replicateSoundEffectsVideoModel, replicateAudioExtendModel, falTranscribeModel, replicateTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, replicateLipsyncImageModel, replicateLipsyncVideoModel, lipsyncProvider, speechProvider, ollamaSpeechModel, replicateSpeechModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, audioExtendDuration]);
 
   const patchSettingsModelSelection = (patch: Partial<ModelSelectionValue>) => {
     if (patch.primaryProvider !== undefined) setPrimaryProvider(patch.primaryProvider);
@@ -408,6 +411,7 @@ function useAppConfig({openRouterHasKey, falHasKey, replicateHasKey, runwareHasK
     if (patch.falVideoKeyframeModel !== undefined) setFalVideoKeyframeModel(patch.falVideoKeyframeModel);
     if (patch.falVideoExtendModel !== undefined) setFalVideoExtendModel(patch.falVideoExtendModel);
     if (patch.falVideoMotionModel !== undefined) setFalVideoMotionModel(patch.falVideoMotionModel);
+    if (patch.falVideoCharacterModel !== undefined) setFalVideoCharacterModel(patch.falVideoCharacterModel);
     if (patch.falVideoUpscaleModel !== undefined) setFalVideoUpscaleModel(patch.falVideoUpscaleModel);
     if (patch.falVideoReframeModel !== undefined) setFalVideoReframeModel(patch.falVideoReframeModel);
     if (patch.falVideoRestyleModel !== undefined) setFalVideoRestyleModel(patch.falVideoRestyleModel);
@@ -532,6 +536,7 @@ function useAppConfig({openRouterHasKey, falHasKey, replicateHasKey, runwareHasK
     setFalVideoKeyframeModel(next.falVideoKeyframeModel);
     setFalVideoExtendModel(next.falVideoExtendModel);
     setFalVideoMotionModel(next.falVideoMotionModel);
+    setFalVideoCharacterModel(next.falVideoCharacterModel);
     setFalVideoUpscaleModel(next.falVideoUpscaleModel);
     setFalVideoReframeModel(next.falVideoReframeModel);
     setFalVideoRestyleModel(next.falVideoRestyleModel);
@@ -621,6 +626,7 @@ function useAppConfig({openRouterHasKey, falHasKey, replicateHasKey, runwareHasK
     falVideoKeyframeModel,
     falVideoModel,
     falVideoMotionModel,
+    falVideoCharacterModel,
     falVideoReframeModel,
     falVideoRestyleModel,
     falVideoUpscaleModel,

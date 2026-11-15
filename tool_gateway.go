@@ -1368,6 +1368,76 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			generated.Notices = notices
 			return generated, genErr
 		}
+		gateway.tools.ReplaceCharacter = func(ctx context.Context, req VideoCharacterReplaceRequest) (GeneratedVideo, error) {
+			// Cloud-only and fal-only (it does not follow VideoProvider):
+			// airplane mode refuses the call.
+			if err := airplaneMediaError(config, "replace_character"); err != nil {
+				return GeneratedVideo{}, err
+			}
+			apiKey, err := loadFalAPIKey()
+			if err != nil {
+				return GeneratedVideo{}, err
+			}
+			if strings.TrimSpace(apiKey) == "" {
+				return GeneratedVideo{}, errFalKeyNotConfigured
+			}
+			client := newFalClient(app.client, apiKey)
+			// Measure the source BEFORE hosting swaps the data URL for a fal
+			// CDN URL: the resolver refuses a clip outside the model's input
+			// window before any money moves.
+			if seconds, ok := falVideoSourceSeconds([]string{req.Video}); ok {
+				req.SourceSeconds = seconds
+			}
+			// Hosted unconditionally, the restyle rule: an attached clip
+			// almost always exceeds fal's inline limit, and character
+			// references are normalized to a model-decodable format and
+			// hosted the same way (a HEIC character sheet can't ride fal's
+			// image inputs).
+			if resolved, err := client.resolveMediaURLHosted(ctx, req.Video, "video/mp4", "source-video.mp4"); err == nil {
+				req.Video = resolved
+			}
+			index := 0
+			for c := range req.Characters {
+				images := ensureModelSafeImages(ctx, config, req.Characters[c].Images)
+				for i, img := range images {
+					if resolved, err := client.resolveMediaURLHosted(ctx, img, "image/png", fmt.Sprintf("character-reference-%d.png", index)); err == nil {
+						images[i] = resolved
+					}
+					index++
+				}
+				req.Characters[c].Images = images
+			}
+			schema := schemaCache.Get(ctx, req.Model)
+			body, notices, diagnostics, err := resolveCharacterReplaceBody(schema, req, falOverrides)
+			if err != nil {
+				return GeneratedVideo{Notices: notices}, err
+			}
+			job := &mediaJob{}
+			client.jobSink = job
+			generated, recovered, genErr := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+				func(jctx context.Context) (GeneratedVideo, error) {
+					return client.GenerateVideo(jctx, req.Model, body)
+				},
+				client.CancelMediaJob,
+				client.RecoverVideoJob,
+			)
+			if genErr == nil {
+				if recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
+				// Replacement preserves the source's length, so the rendered
+				// clip's own container carries the billed seconds (the restyle
+				// rule); flat per-video models price off Requests.
+				hints := falBillingHints{Requests: 1}
+				if seconds, ok := falVideoBilledSeconds(generated.Data, ""); ok {
+					hints.Seconds = seconds
+				}
+				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)
+			}
+			generated.Notices = notices
+			generated.Diagnostics = append(generated.Diagnostics, diagnostics...)
+			return generated, genErr
+		}
 		gateway.tools.GenerateAudio = func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error) {
 			// Speech routes by Models.SpeechProvider: the ollama branch runs
 			// the local model over loopback — no key to load, and airplane

@@ -51,7 +51,7 @@ same(configValues(asConfig({providers: {local: {whisper: {chunkMinutes: 0}}}})).
 // another would reset on every restart.
 const fal = Object.fromEntries([
   'model', 'imageEditModel', 'videoModel', 'videoImageModel', 'videoKeyframeModel', 'videoExtendModel',
-  'videoMotionModel', 'videoUpscaleModel', 'videoReframeModel', 'videoRestyleModel', 'audioModel',
+  'videoMotionModel', 'videoUpscaleModel', 'videoReframeModel', 'videoRestyleModel', 'videoCharacterModel', 'audioModel',
   'soundEffectsModel', 'soundEffectsVideoModel', 'voiceDesignModel', 'audioCloneModel', 'audioExtendModel',
   'transcribeModel', 'upscaleModel', 'inpaintModel', 'lipsyncImageModel', 'lipsyncVideoModel',
 ].map((field) => [field, `fal-ai/custom/${field}`]));
@@ -73,7 +73,7 @@ const full = asConfig({
     fal,
     replicate,
     runware: {
-      model: 'civitai:4201@130072',
+      model: 'civitai:4201@130072', imageEditModel: 'runware:9@7', upscaleModel: 'runware:9@6',
       videoModel: 'klingai:kling-video@9.9', videoImageModel: 'klingai:kling-video@9.8',
       videoExtendModel: 'google:3@1', videoUpscaleModel: 'bfl:flux@video-upscale-9',
       videoRestyleModel: 'bfl:flux@video-edit-9', inpaintModel: 'bfl:9@9',

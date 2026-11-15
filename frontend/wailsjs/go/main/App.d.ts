@@ -126,6 +126,8 @@ export function ListFalTranscribeModels():Promise<Array<main.FalModel>>;
 
 export function ListFalUpscaleModels():Promise<Array<main.FalModel>>;
 
+export function ListFalVideoCharacterModels():Promise<Array<main.FalModel>>;
+
 export function ListFalVideoDurations(arg1:string):Promise<Array<string>>;
 
 export function ListFalVideoExtendModels():Promise<Array<main.FalModel>>;

@@ -92,6 +92,10 @@ func builtinFalOverrides() Overrides {
 		// The video sound-effects category (resolveSFXBody): empty by default,
 		// present so user overrides in fal-overrides.json have a home.
 		"sfx": {},
+		// The character-replacement category (resolveCharacterReplaceBody):
+		// empty by default, present so user overrides in fal-overrides.json
+		// have a home.
+		"character": {},
 	}}
 }
 
@@ -2549,6 +2553,8 @@ func synonymsFor(category, canon string) []string {
 		return replicateLipsyncSynonyms[canon]
 	case "sfx":
 		return sfxSynonyms[canon]
+	case "character":
+		return characterSynonyms[canon]
 	case "inpaint":
 		return inpaintSynonyms[canon]
 	case "replicate-image":
