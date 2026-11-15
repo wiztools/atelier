@@ -2101,6 +2101,11 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 		audios: turn.AttachedAudios,
 	})
 	deadline := time.Now().Add(harnessChatMaxWallTime)
+	// triageTaskCorrected tracks whether the triage-toolTask routing
+	// correction has already been issued this turn — it fires once, so a
+	// planner that declines again after being told the routing stands ends
+	// the turn honestly instead of being forced every round.
+	triageTaskCorrected := false
 
 	prepared := HarnessPreparedTurn{SkillDecision: skillDecision, LoadedSkill: loadedSkill, mediaFeeds: turn.MediaFeeds}
 	for iteration := 1; iteration <= harnessChatMaxSteps; iteration++ {
@@ -2155,6 +2160,12 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 		// conv_7832ea8b: the planner returned needsTools:false for an image turn,
 		// the loop broke, and no image was generated.
 		if msg := generationModeRequiresToolCall(turn.ResponseMode, plan, prepared.ToolResults); msg != "" {
+			validationErrors = append(validationErrors, msg)
+		} else if msg := triageTaskRequiresToolCall(turn.ToolTask, plan, prepared.ToolResults, registry); msg != "" && !triageTaskCorrected {
+			// Fired once per turn: a genuine decline (triage over-routed an
+			// advice question into an edit) must still be able to end the
+			// loop toolless after being told the routing stands.
+			triageTaskCorrected = true
 			validationErrors = append(validationErrors, msg)
 		}
 		round := HarnessToolRound{
@@ -2607,6 +2618,69 @@ func generationModeRequiresToolCall(responseMode string, plan HarnessToolPlan, p
 	return fmt.Sprintf("responseMode %q was routed to tools, but the plan emits no tool call. A media turn cannot be completed without a tool call (e.g. generate_image/generate_video/generate_speech/generate_sound/extend_audio, lip_sync, or transcribe_audio). Set needsTools true and emit the relevant call.", responseMode)
 }
 
+// triageTaskRequiresToolCall is the text-mode sibling of
+// generationModeRequiresToolCall: when triage routed the turn to tools and its
+// toolTask names a registry tool, a plan that emits no tool call is
+// contradicting the routing, not legitimately declining it.
+// conv_536c4186a526032430fdda6d: triage wrote toolTask "extract_audio" for an
+// "Extract audio from this." ask, and the planner closed the loop with zero
+// calls — its brief claimed "the tool call extract_audio was already requested
+// by the triage and is being executed", misreading the routing REQUEST as an
+// executed call. The loop broke silently, and the final model — which never
+// sees the attachment (videos are stripped for text models) or the planner's
+// brief — answered the bare message with a DIY ffmpeg tutorial. Generation
+// modes keep their own guard and exhaustion path (the caller only reaches this
+// when that guard stayed silent); fail-safe triage and explicit-skill turns
+// carry no toolTask, so their empty task never matches. Like the generation
+// guard, a plan that already carries calls needs no correction, and once a
+// tool has run this turn the planner may legitimately close the loop.
+func triageTaskRequiresToolCall(toolTask string, plan HarnessToolPlan, priorResults []HarnessToolResult, registry HarnessToolRegistry) string {
+	task := strings.ToLower(strings.TrimSpace(toolTask))
+	if task == "" || len(plan.ToolCalls) > 0 || len(priorResults) > 0 {
+		return ""
+	}
+	var named []string
+	for _, definition := range registry.definitions {
+		if containsToolNameWord(task, strings.ToLower(definition.Name)) {
+			named = append(named, definition.Name)
+		}
+	}
+	if len(named) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("Triage routed this turn to the %s tool, but the plan emits no tool call. Triage's toolTask is a routing instruction, not a record of an executed call — no tool has run yet this turn. Set needsTools true and emit that call now; a failed call is still evidence, silence is not.", strings.Join(named, ", "))
+}
+
+// containsToolNameWord reports whether text names tool verbatim as a whole
+// word. Letters, digits, and underscores bind a tool name (they are its own
+// vocabulary), so "extract_audio" matches "the extract_audio tool" and
+// "extract_audio." but not "use_extract_audio_first".
+func containsToolNameWord(text, name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i+len(name) <= len(text); i++ {
+		if text[i:i+len(name)] != name {
+			continue
+		}
+		if !toolNameBoundary(text, i-1) || !toolNameBoundary(text, i+len(name)) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// toolNameBoundary reports whether the byte at index is outside a tool name —
+// the string edge or a character that cannot appear inside a name.
+func toolNameBoundary(text string, index int) bool {
+	if index < 0 || index >= len(text) {
+		return true
+	}
+	c := text[index]
+	return !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_')
+}
+
 func (h *HarnessEngine) plannerSystemPrompt(registry HarnessToolRegistry, req ChatRequest, loadedSkill *LoadedSkill, toolTask, responseMode string, userRequested bool) string {
 	system := strings.TrimSpace(fmt.Sprintf(`You are Atelier's private harness model. You gather evidence for the final model that will answer the user.
 Do not answer the user directly. Do not include hidden chain-of-thought. Respond only with a JSON tool plan matching the response schema:
@@ -2630,7 +2704,7 @@ When "needsTools" is false, "toolCalls" must be []. Prefer read-only calls unles
 		system += "\n\nActive SKILL.md selected for this turn. Follow these instructions when planning tools and writing the brief, including any workflow or command guidance that applies. Do not quote the skill unless the user asks about process.\n\n" + loadedSkill.Body
 	}
 	if strings.TrimSpace(toolTask) != "" {
-		system += "\n\nThe primary model triaged this turn and requested tool evidence:\n" + strings.TrimSpace(toolTask)
+		system += "\n\nThe primary model triaged this turn and requested tool evidence:\n" + strings.TrimSpace(toolTask) + "\nTriage runs no tools itself — that request is a routing instruction, not an executed call. Emit the requested tool call yourself unless the user's message is a question about the edit rather than a request for it."
 	}
 	system += projectInstructionsSection(req.ProjectNotes)
 	return system
@@ -2689,7 +2763,7 @@ The filesystem tools and run_command operate on real files on this machine; path
 		system += "\n\nActive SKILL.md selected for this turn. Follow these instructions when planning tools and writing the summary, including any workflow or command guidance that applies. Do not quote the skill unless the user asks about process.\n\n" + loadedSkill.Body
 	}
 	if strings.TrimSpace(toolTask) != "" {
-		system += "\n\nThe primary model triaged this turn and requested tool evidence:\n" + strings.TrimSpace(toolTask)
+		system += "\n\nThe primary model triaged this turn and requested tool evidence:\n" + strings.TrimSpace(toolTask) + "\nTriage runs no tools itself — that request is a routing instruction, not an executed call. Emit the requested tool call yourself unless the user's message is a question about the edit rather than a request for it."
 	}
 	system += projectInstructionsSection(req.ProjectNotes)
 	return system

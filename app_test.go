@@ -4238,6 +4238,85 @@ func TestGenerationModeRequiresToolCall(t *testing.T) {
 	}
 }
 
+// TestTriageTaskRequiresToolCall is the unit guard for conv_536c4186a526032430fdda6d:
+// an "Extract audio from this." turn triaged correctly (toolTask "extract_audio"),
+// but the planner closed the loop with zero calls — its brief claimed "the tool
+// call extract_audio was already requested by the triage and is being executed",
+// misreading the routing request as an executed call. The loop broke silently and
+// the final model, blind to both the attachment and the planner's brief, answered
+// with a DIY ffmpeg tutorial. A text-mode toolTask that names a registry tool must
+// correct a no-call plan the way a generation responseMode does.
+func TestTriageTaskRequiresToolCall(t *testing.T) {
+	registry := newHarnessToolRegistry([]HarnessToolDefinition{
+		{Name: "extract_audio"},
+		{Name: "split_video"},
+	})
+	emptyPlan := HarnessToolPlan{NeedsTools: false, ToolCalls: nil}
+	// The exact conv_536c4186a526032430fdda6d toolTask: the correction must
+	// name the tool triage requested.
+	msg := triageTaskRequiresToolCall("extract_audio", emptyPlan, nil, registry)
+	if msg == "" {
+		t.Fatal("a toolTask naming extract_audio with no tool calls must yield a correction")
+	}
+	if !strings.Contains(msg, "extract_audio") || !strings.Contains(msg, "routing instruction") {
+		t.Errorf("correction must name the triage-requested tool and teach the contract, got %q", msg)
+	}
+	// Prose toolTasks that echo the tool name fire the same way.
+	if msg := triageTaskRequiresToolCall("Extract the audio track from the attached clip with extract_audio.", emptyPlan, nil, registry); msg == "" {
+		t.Error("a prose toolTask naming the tool must yield a correction")
+	}
+	// A task naming no registry tool is free routing guidance, not a forced call.
+	if msg := triageTaskRequiresToolCall("gather facts about the attached clip", emptyPlan, nil, registry); msg != "" {
+		t.Errorf("a toolTask naming no registry tool must not force a call: %q", msg)
+	}
+	// A plan that already includes a call needs no correction.
+	planWithCall := HarnessToolPlan{NeedsTools: true, ToolCalls: []HarnessToolCall{{Name: "extract_audio"}}}
+	if msg := triageTaskRequiresToolCall("extract_audio", planWithCall, nil, registry); msg != "" {
+		t.Errorf("a plan with the requested call must not be corrected: %q", msg)
+	}
+	// Once a tool has produced output this turn, the planner may close the loop.
+	prior := []HarnessToolResult{{Name: "extract_audio", Status: "completed"}}
+	if msg := triageTaskRequiresToolCall("extract_audio", emptyPlan, prior, registry); msg != "" {
+		t.Errorf("a turn with prior results must allow the planner to close: %q", msg)
+	}
+	// Fail-safe triage and explicit-skill turns carry no toolTask: never forced.
+	if msg := triageTaskRequiresToolCall("", emptyPlan, nil, registry); msg != "" {
+		t.Errorf("an empty toolTask (fail-safe/explicit-skill) must not force a call: %q", msg)
+	}
+	// A tool outside the registry (e.g. ffmpeg missing, so its tools are
+	// ungated from the catalog) cannot be forced — the install-note path owns it.
+	if msg := triageTaskRequiresToolCall("burn_subtitles", emptyPlan, nil, registry); msg != "" {
+		t.Errorf("a toolTask naming an unregistered tool must not force a call: %q", msg)
+	}
+	// Whole-word matching: extract_audio inside a longer snake_case token is
+	// not the tool being named.
+	if msg := triageTaskRequiresToolCall("never call use_extract_audio_first", emptyPlan, nil, registry); msg != "" {
+		t.Errorf("a tool name embedded in a longer identifier must not match: %q", msg)
+	}
+}
+
+// TestPlannerSystemPromptTeachesTriageTaskContract pins the prompt-side teaching
+// for the same conv: the toolTask section must state that triage runs no tools
+// itself, so the planner cannot read the routing request as an executed call.
+func TestPlannerSystemPromptTeachesTriageTaskContract(t *testing.T) {
+	engine := newHarnessEngine(defaultAppConfig())
+	req := ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "Extract audio from this."}}}
+	registry := newHarnessToolRegistry([]HarnessToolDefinition{{Name: "extract_audio"}})
+	for _, prompt := range []string{
+		engine.plannerSystemPrompt(registry, req, nil, "extract_audio", "text", false),
+		engine.plannerSystemPromptNative(registry, req, nil, "extract_audio", "text", false),
+	} {
+		if !strings.Contains(prompt, "Triage runs no tools itself") {
+			t.Errorf("planner prompt must teach that the toolTask is not an executed call, got %q", prompt[:min(len(prompt), 400)])
+		}
+	}
+	// Without a toolTask the teaching line stays out.
+	prompt := engine.plannerSystemPrompt(registry, req, nil, "", "text", false)
+	if strings.Contains(prompt, "Triage runs no tools itself") {
+		t.Error("planner prompt without a toolTask must not carry the triage-contract line")
+	}
+}
+
 func TestGenerationPlanningExhaustedNotice(t *testing.T) {
 	// Each generation mode names its media type and states nothing was generated.
 	cases := map[string]string{
