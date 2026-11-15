@@ -560,6 +560,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			ExplicitSkill:   explicitSkill,
 			ExplicitReason:  explicitReason,
 			ToolTask:        decision.ToolTask,
+			UserRequest:     lastUserMessage(req.Messages).Content,
 			PrimaryModel:    primaryModel,
 			PrimaryProvider: primaryProvider,
 			ResponseMode:    decision.ResponseMode,
@@ -1813,11 +1814,14 @@ func truncateChatHistory(messages []ChatMessage, budgetChars int) []ChatMessage 
 // user named, the primary model's triage task for the planner, and whether the
 // harness model supports native tool-calling.
 type harnessTurnContext struct {
-	SkillIndex      []SkillIndexEntry
-	SkillIndexErr   error
-	ExplicitSkill   *SkillIndexEntry
-	ExplicitReason  string
-	ToolTask        string
+	SkillIndex     []SkillIndexEntry
+	SkillIndexErr  error
+	ExplicitSkill  *SkillIndexEntry
+	ExplicitReason string
+	ToolTask       string
+	// UserRequest is the latest user message's text — generate_video's
+	// record of the brief when the planner's prompt drops it.
+	UserRequest     string
 	PrimaryModel    string
 	PrimaryProvider string
 	ResponseMode    string
@@ -3796,6 +3800,8 @@ func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conv
 	// recovery: when the planner drops imageRole from a two-image transition
 	// call, the executor binds the role triage named (conv_3bf4561b7c7dbb19316e2936).
 	gateway.tools.TriageTask = turn.ToolTask
+	// The user's own request, for generate_video's dropped-brief floor.
+	gateway.tools.UserRequest = turn.UserRequest
 	// History access for the planner's explicit source: generate_video re-reads
 	// the newest artifact of the named kind when the turn's slots lack it.
 	gateway.tools.Storage = h.config.Storage

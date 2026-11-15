@@ -81,6 +81,12 @@ type HarnessToolExecutionContext struct {
 	// no role of its own cannot carry the ambiguity resolution. Empty on the
 	// direct/UI tool path, where the caller's own params are the whole contract.
 	TriageTask string
+	// UserRequest is the text of the turn's latest user message. generate_video
+	// reads it to restore a brief the planner's prompt dropped
+	// (restoredUserBrief, conv_efa4b078cd9a24df88d76203): the paid model sees
+	// only the call, so a generic sentence in place of a beat-by-beat brief
+	// bills a clip the user never described. Empty on the direct/UI tool path.
+	UserRequest string
 	// Storage and ConversationID let generate_video re-read the conversation's
 	// most recent artifact of a kind when the planner's explicit source names
 	// one the slots don't carry (a bare follow-up whose fallback resolved to a
@@ -1339,9 +1345,25 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 			// (attachedVideos), the value is the length of the extension, not the
 			// total clip — resolveVideoBody surfaces that distinction to the user
 			// via a notice so the planner's intent isn't misread as total length.
+			// Between the two sits triage's stated length: a planner that drops
+			// the user's "6s" would otherwise bill the configured default
+			// (conv_efa4b078cd9a24df88d76203: triage wrote duration:"6", the call
+			// carried none, and the clip rendered at the configured 10s).
 			duration := strings.TrimSpace(call.Duration)
+			recoveredDuration := ""
 			if duration == "" {
-				duration = tools.Config.Generation.Video.Duration
+				if recoveredDuration = triageDurationSeconds(tools.TriageTask); recoveredDuration != "" {
+					duration = recoveredDuration
+				} else {
+					duration = tools.Config.Generation.Video.Duration
+				}
+			}
+			// The prompt-completeness floor: when the planner's prompt dropped a
+			// substantial brief, the user's own words ride instead (restoredUserBrief).
+			prompt := strings.TrimSpace(call.Content)
+			restoredBrief := restoredUserBrief(prompt, tools.UserRequest)
+			if restoredBrief != "" {
+				prompt = restoredBrief
 			}
 			// Resolution precedence mirrors the image tool's tier rule: an
 			// explicit resolution on the call wins; otherwise the configured
@@ -1362,7 +1384,7 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 			// the executor's diagnosis and the resolver's can't disagree.
 			videoReq := VideoGenerateRequest{
 				Model:               model,
-				Prompt:              strings.TrimSpace(call.Content),
+				Prompt:              prompt,
 				Duration:            duration,
 				AspectRatio:         ratio,
 				AspectRatioExplicit: explicit,
@@ -1441,6 +1463,15 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 			if recoveredKeyframes {
 				output.Diagnostics = append(output.Diagnostics,
 					"The planned call omitted imageRole, but the turn was triaged as a start→end transition between two frames, so the call ran with imageRole \"keyframes\": the first image opens the clip and the last closes it.")
+			}
+			if recoveredDuration != "" {
+				output.Diagnostics = append(output.Diagnostics, fmt.Sprintf(
+					"The planned call omitted duration, but triage named a %ss clip, so the call ran with duration %q instead of the configured default.",
+					recoveredDuration, recoveredDuration))
+			}
+			if restoredBrief != "" {
+				output.Diagnostics = append(output.Diagnostics,
+					"The planned prompt dropped most of the user's brief, so the call ran with the user's own request as its prompt (mention tokens removed; the attached media ride the call).")
 			}
 			output.Notices = append(output.Notices, sourceNotices...)
 			if keyframesFallbackNotice != "" {
