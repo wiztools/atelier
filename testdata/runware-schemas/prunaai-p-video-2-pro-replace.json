@@ -1,0 +1,637 @@
+{
+    "openapi": "3.1.0",
+    "info": {
+        "title": "Runware API - P-Video-2-Pro-Replace",
+        "summary": "Replace one or two people in an existing video from a photo, keeping motion, camera, and lip sync",
+        "description": "P-Video-2-Pro-Replace is Pruna AI's character replacement model that puts the person from one or two photos into an existing video. It keeps the original camera, background, timing, and motion, carries over the source soundtrack with lips that follow it, and replaces two people at once with a prompt that says who replaces whom. It takes source clips from 1 second to 2 minutes and outputs from 480p up to 4K, for UGC ad variations, localized spokesperson videos, and recasting existing footage.",
+        "version": "1.0.0",
+        "x-model-id": "prunaai-p-video-2-pro-replace",
+        "x-air-id": "prunaai:p-video@2-pro-replace",
+        "x-status": "live",
+        "x-creator": {
+            "id": "prunaai",
+            "name": "Pruna AI",
+            "logo": "https://assets.runware.ai/9d2bd33f-144d-4a7f-8caf-fed8a74614b7.png"
+        },
+        "x-capabilities": [
+            "image-to-video",
+            "video-to-video",
+            "edit",
+            "checkpoint",
+            "audio"
+        ],
+        "x-modes": [
+            {
+                "id": "reference-images+video",
+                "inputs": [
+                    "referenceImages",
+                    "video"
+                ]
+            }
+        ],
+        "x-released-at": "2026-11-05T00:00:00Z",
+        "x-cover-image": "https://assets.runware.ai/covers/prunaai-p-video-2-pro-replace.jpg",
+        "x-examples": "https://runware.ai/docs/models/prunaai-p-video-2-pro-replace/examples.json",
+        "x-pricing": {
+            "currency": "USD",
+            "docs": "https://runware.ai/docs/models-api/pricing",
+            "rates": [
+                {
+                    "amount": 0.05,
+                    "unit": "durationSecond",
+                    "label": "480p",
+                    "display": "$0.05 per second"
+                },
+                {
+                    "amount": 0.1,
+                    "unit": "durationSecond",
+                    "label": "768p",
+                    "display": "$0.10 per second"
+                },
+                {
+                    "amount": 0.12,
+                    "unit": "durationSecond",
+                    "label": "1080p",
+                    "display": "$0.12 per second"
+                },
+                {
+                    "amount": 0.14,
+                    "unit": "durationSecond",
+                    "label": "2K",
+                    "display": "$0.14 per second"
+                },
+                {
+                    "amount": 0.18,
+                    "unit": "durationSecond",
+                    "label": "4K",
+                    "display": "$0.18 per second"
+                }
+            ],
+            "examples": [
+                {
+                    "id": "period-wharf-crew-cleanup",
+                    "configuration": "two-person-replacement",
+                    "price": 0.35,
+                    "latencyMs": 102125
+                },
+                {
+                    "id": "museum-training-cast-continuity-fix",
+                    "configuration": "two-person-replacement",
+                    "price": 0.35,
+                    "latencyMs": 88156
+                },
+                {
+                    "id": "community-observatory-logo-bumper",
+                    "configuration": "video-edit \u00b7 1080p",
+                    "price": 0.42,
+                    "latencyMs": 121023
+                },
+                {
+                    "id": "mushroom-farm-sensor-explainer",
+                    "configuration": "video-edit \u00b7 1080p",
+                    "price": 0.42,
+                    "latencyMs": 148070
+                }
+            ]
+        }
+    },
+    "externalDocs": {
+        "description": "P-Video-2-Pro-Replace on Runware",
+        "url": "https://runware.ai/docs/models/prunaai-p-video-2-pro-replace"
+    },
+    "servers": [
+        {
+            "url": "https://api.runware.ai/v1",
+            "description": "Runware REST API"
+        }
+    ],
+    "components": {
+        "securitySchemes": {
+            "apiKeyAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "description": "Runware API Key (e.g., Bearer <your-key>)"
+            }
+        },
+        "schemas": {
+            "AuthenticationTask": {
+                "title": "Authentication",
+                "description": "Authenticates a connection using an API key. Can be sent as the first element of the request array as an alternative to using the Authorization header.",
+                "type": "object",
+                "x-response-schema": "https://schemas.runware.ai/responses/utilities/authentication.json",
+                "properties": {
+                    "taskType": {
+                        "title": "Task Type",
+                        "description": "Identifier for the type of task being performed.",
+                        "type": "string",
+                        "const": "authentication"
+                    },
+                    "apiKey": {
+                        "title": "API Key",
+                        "description": "Your Runware API key.",
+                        "type": "string"
+                    },
+                    "connectionSessionUUID": {
+                        "title": "Connection Session UUID",
+                        "description": "Optional session UUID to resume a previous connection and receive any buffered results.",
+                        "type": "string",
+                        "format": "uuid"
+                    }
+                },
+                "required": [
+                    "taskType",
+                    "apiKey"
+                ],
+                "additionalProperties": false
+            },
+            "RequestBody": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "x-constraints": [
+                        {
+                            "operation": "duration",
+                            "parameters": [
+                                "inputs.video"
+                            ],
+                            "minimum": 1,
+                            "maximum": 120
+                        },
+                        {
+                            "operation": "ratio",
+                            "parameters": [
+                                "inputs.video"
+                            ],
+                            "minimum": 0.25,
+                            "maximum": 4,
+                            "scope": "each"
+                        },
+                        {
+                            "operation": "area",
+                            "parameters": [
+                                "inputs.video"
+                            ],
+                            "maximum": 33177600,
+                            "scope": "each"
+                        }
+                    ],
+                    "properties": {
+                        "model": {
+                            "title": "Model",
+                            "description": "Send `auto` instead of an AIR identifier to have the model router choose the model for this task. The rest of the request is unchanged, every value you send is kept, and only the parameters you leave out are filled in. See [Model Router](https://runware.ai/docs/models-api/model-router).\n\n[Read full documentation](https://runware.ai/docs/models/prunaai-p-video-2-pro-replace#model)",
+                            "type": "string",
+                            "const": "prunaai:p-video@2-pro-replace"
+                        },
+                        "inputs": {
+                            "title": "Inputs",
+                            "description": "Input assets for the task.",
+                            "type": "object",
+                            "properties": {
+                                "referenceImages": {
+                                    "title": "Reference Images",
+                                    "description": "List of reference images (UUID, URL, Data URI, or Base64). One image per person to replace, matched to the people in the video from left to right unless `positivePrompt` says otherwise.",
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": {
+                                        "title": "Image",
+                                        "description": "Image input (UUID, URL, Data URI, or Base64).",
+                                        "type": "string",
+                                        "anyOf": [
+                                            {
+                                                "format": "uuid"
+                                            },
+                                            {
+                                                "format": "uri"
+                                            },
+                                            {
+                                                "pattern": "^data:image\\/[a-zA-Z]+;base64,[a-zA-Z0-9+/=]+$"
+                                            },
+                                            {
+                                                "pattern": "^[a-zA-Z0-9+/=]+$"
+                                            }
+                                        ]
+                                    },
+                                    "maxItems": 2
+                                },
+                                "video": {
+                                    "title": "Video",
+                                    "description": "Video input (UUID or URL). The output keeps the source length and aspect ratio, at 24 fps.",
+                                    "type": "string",
+                                    "anyOf": [
+                                        {
+                                            "format": "uuid"
+                                        },
+                                        {
+                                            "format": "uri"
+                                        }
+                                    ]
+                                }
+                            },
+                            "required": [
+                                "referenceImages",
+                                "video"
+                            ],
+                            "additionalProperties": false
+                        },
+                        "positivePrompt": {
+                            "title": "Positive Prompt",
+                            "description": "Instruction for who replaces whom, or how to place the new person.",
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 4000
+                        },
+                        "resolution": {
+                            "title": "Resolution",
+                            "description": "Resolution preset for the output. When used with input media, automatically matches the aspect ratio from the input. Resolutions above `768p` are generated at 768p and upscaled.",
+                            "type": "string",
+                            "enum": [
+                                "480p",
+                                "768p",
+                                "1080p",
+                                "2k",
+                                "4k"
+                            ],
+                            "default": "768p"
+                        },
+                        "settings": {
+                            "title": "Settings",
+                            "description": "Global inference settings.",
+                            "type": "object",
+                            "properties": {
+                                "preserveAudio": {
+                                    "title": "Preserve Audio",
+                                    "description": "Preserve the source video audio track in the output.",
+                                    "type": "boolean",
+                                    "default": true
+                                },
+                                "safetyFilter": {
+                                    "title": "Safety Filter",
+                                    "description": "Content safety filtering.",
+                                    "type": "boolean",
+                                    "default": true
+                                },
+                                "sourceAudioSync": {
+                                    "title": "Source Audio Sync",
+                                    "description": "Drive lip and motion sync from the source video audio. Independent of `preserveAudio`, which controls audio in the final output.",
+                                    "type": "boolean",
+                                    "default": true
+                                }
+                            },
+                            "additionalProperties": false
+                        },
+                        "taskType": {
+                            "title": "Task Type",
+                            "description": "Identifier for the type of task being performed.",
+                            "type": "string",
+                            "const": "videoInference"
+                        },
+                        "taskUUID": {
+                            "title": "Task UUID",
+                            "description": "UUID v4 identifier for tracking tasks and matching async responses. Must be unique per task.",
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "webhookURL": {
+                            "title": "Webhook URL",
+                            "description": "Webhook URL that receives JSON responses via HTTP POST when generation tasks complete. For batch requests with multiple results, each completed item triggers a separate webhook call as it becomes available.",
+                            "type": "string",
+                            "format": "uri"
+                        },
+                        "includeCost": {
+                            "title": "Include Cost",
+                            "description": "Include task cost in the response.",
+                            "type": "boolean"
+                        },
+                        "numberResults": {
+                            "title": "Number of Results",
+                            "description": "Number of results to generate. Each result uses a different seed, producing variations of the same parameters.",
+                            "type": "integer",
+                            "minimum": 1,
+                            "default": 1,
+                            "maximum": 4
+                        },
+                        "uploadEndpoint": {
+                            "title": "Upload Endpoint",
+                            "description": "Specifies a URL where the generated content will be automatically uploaded using the HTTP PUT method. The raw binary data of the media file is sent directly as the request body. For secure uploads to cloud storage, use presigned URLs that include temporary authentication credentials.\n\n**Common use cases:**\n\n- **Cloud storage**: Upload directly to S3 buckets, Google Cloud Storage, or Azure Blob Storage using presigned URLs.\n- **CDN integration**: Upload to content delivery networks for immediate distribution.\n\n```text\n// S3 presigned URL for secure upload\nhttps://your-bucket.s3.amazonaws.com/generated/content.mp4?X-Amz-Signature=abc123&X-Amz-Expires=3600\n\n// Google Cloud Storage presigned URL\nhttps://storage.googleapis.com/your-bucket/content.jpg?X-Goog-Signature=xyz789\n\n// Custom storage endpoint\nhttps://storage.example.com/uploads/generated-image.jpg\n```\n\nThe content data will be sent as the request body to the specified URL when generation is complete.\n\n[Read full documentation](https://runware.ai/docs/models/prunaai-p-video-2-pro-replace#uploadEndpoint)",
+                            "type": "string",
+                            "format": "uri"
+                        },
+                        "ttl": {
+                            "title": "TTL",
+                            "description": "Time-to-live (TTL) in seconds for generated content. Only applies when `outputType` is `URL`.",
+                            "type": "integer",
+                            "minimum": 60
+                        },
+                        "outputType": {
+                            "title": "Output Type",
+                            "description": "Video output type.",
+                            "type": "string",
+                            "enum": [
+                                "URL"
+                            ],
+                            "default": "URL"
+                        },
+                        "outputFormat": {
+                            "title": "Output Format",
+                            "description": "Specifies the file format of the generated output. The available values depend on the task type and the specific model's capabilities.\n\n- \\`JPG\\`: Best for photorealistic images with smaller file sizes (no transparency).\n- \\`PNG\\`: Lossless compression, supports high quality and transparency (alpha channel).\n- \\`WEBP\\`: Modern format providing superior compression and transparency support.\n- \\`MP4\\`: Widely supported video container (H.264), recommended for general use.\n- \\`WEBM\\`: Optimized for web delivery.\n- \\`MOV\\`: QuickTime format, common in professional workflows (Apple ecosystem).\n- \\`GIF\\`: Animated image format (no audio), suitable for short loops or previews.\n- \\`MP3\\`: Compressed audio, smaller file size.\n- \\`WAV\\`: Uncompressed, high-quality audio.\n- \\`FLAC\\`: Lossless compression.\n- \\`OGG\\`: Open-source compressed audio format (Vorbis codec).\n- \\`SVG\\`: Scalable Vector Graphics.\n- \\`TIFF\\`: High-quality output supporting layers.\n- \\`GLB\\`: Binary glTF format for 3D models, including geometry, textures, and PBR materials.\n\n> [!NOTE]\n> \\*\\*Transparency\\*\\*: If you are using features like background removal or LayerDiffuse that require transparency, you must select a format that supports an alpha channel (e.g., \\`PNG\\`, \\`WEBP\\`, \\`TIFF\\`). \\`JPG\\` does not support transparency.\n\n[Read full documentation](https://runware.ai/docs/models/prunaai-p-video-2-pro-replace#outputFormat)",
+                            "type": "string",
+                            "enum": [
+                                "MP4",
+                                "WEBM",
+                                "MOV"
+                            ],
+                            "default": "MP4"
+                        },
+                        "outputQuality": {
+                            "title": "Output Quality",
+                            "description": "Compression quality of the output. Higher values preserve quality but increase file size.",
+                            "type": "integer",
+                            "minimum": 20,
+                            "maximum": 99,
+                            "default": 95
+                        },
+                        "deliveryMethod": {
+                            "title": "Delivery Method",
+                            "description": "Determines how the API delivers task results.",
+                            "type": "string",
+                            "oneOf": [
+                                {
+                                    "const": "sync",
+                                    "description": "Returns results directly in the API response. Over HTTP, a task still running after 120 seconds continues as an async task and comes back with status 'processing'. Poll for its results using getResponse."
+                                },
+                                {
+                                    "const": "async",
+                                    "description": "Returns an immediate acknowledgment with the task UUID. Poll for results using getResponse."
+                                }
+                            ],
+                            "default": "async"
+                        },
+                        "safety": {
+                            "type": "object",
+                            "title": "Safety Settings",
+                            "description": "Content safety checking configuration for video generation.",
+                            "properties": {
+                                "checkContent": {
+                                    "title": "Check Content",
+                                    "description": "Enable or disable content safety checking. Increases total generation time.",
+                                    "type": "boolean"
+                                },
+                                "mode": {
+                                    "title": "Safety Mode",
+                                    "description": "Safety checking mode for video generation.",
+                                    "type": "string",
+                                    "oneOf": [
+                                        {
+                                            "const": "fast",
+                                            "title": "Fast",
+                                            "description": "Checks key frames."
+                                        },
+                                        {
+                                            "const": "full",
+                                            "title": "Full",
+                                            "description": "Checks all frames."
+                                        }
+                                    ],
+                                    "default": "fast"
+                                }
+                            },
+                            "additionalProperties": false
+                        }
+                    },
+                    "required": [
+                        "inputs",
+                        "taskType",
+                        "taskUUID",
+                        "model"
+                    ],
+                    "additionalProperties": false
+                },
+                "description": "You must always POST an array of task objects."
+            },
+            "ResponseBody": {
+                "type": "object",
+                "properties": {
+                    "data": {
+                        "type": "array",
+                        "items": {
+                            "title": "Video Response",
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                                "taskType": {
+                                    "title": "Task Type",
+                                    "description": "Identifier for the type of task this response belongs to.",
+                                    "type": "string",
+                                    "const": "videoInference"
+                                },
+                                "taskUUID": {
+                                    "title": "Task UUID",
+                                    "description": "UUID v4 identifier echoed from the original request, used to match async responses to their tasks.",
+                                    "type": "string",
+                                    "format": "uuid"
+                                },
+                                "cost": {
+                                    "title": "Cost",
+                                    "description": "Task cost in USD. Present when `includeCost` is set to `true` in the request.",
+                                    "type": "number"
+                                },
+                                "videoUUID": {
+                                    "title": "Video UUID",
+                                    "description": "UUID of the output video.",
+                                    "type": "string",
+                                    "format": "uuid"
+                                },
+                                "videoURL": {
+                                    "title": "Video URL",
+                                    "description": "URL of the output video.",
+                                    "type": "string",
+                                    "format": "uri"
+                                },
+                                "videoBase64Data": {
+                                    "title": "Video Base64 Data",
+                                    "description": "Base64-encoded video data.",
+                                    "type": "string"
+                                },
+                                "videoDataURI": {
+                                    "title": "Video Data URI",
+                                    "description": "Data URI of the output video.",
+                                    "type": "string",
+                                    "format": "uri"
+                                },
+                                "seed": {
+                                    "title": "Seed",
+                                    "description": "The seed used for generation. If none was provided, shows the randomly generated seed.",
+                                    "type": "integer"
+                                },
+                                "NSFWContent": {
+                                    "title": "NSFW Content",
+                                    "description": "Flag indicating if NSFW content was detected.",
+                                    "type": "boolean"
+                                }
+                            },
+                            "required": [
+                                "taskType",
+                                "taskUUID",
+                                "videoUUID"
+                            ]
+                        }
+                    }
+                }
+            },
+            "ErrorResponse": {
+                "title": "Error Response",
+                "description": "Standard error response returned by the Runware API.",
+                "type": "object",
+                "properties": {
+                    "errors": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": [
+                                "code",
+                                "message"
+                            ],
+                            "additionalProperties": true,
+                            "properties": {
+                                "code": {
+                                    "type": "string",
+                                    "description": "A short identifier for the error (e.g., invalidApiKey, timeoutProvider)."
+                                },
+                                "message": {
+                                    "type": "string",
+                                    "description": "A human-readable explanation of what went wrong."
+                                },
+                                "parameter": {
+                                    "type": "string",
+                                    "description": "The request parameter related to the error, if applicable."
+                                },
+                                "taskType": {
+                                    "type": "string",
+                                    "description": "The task type of the request that failed."
+                                },
+                                "taskUUID": {
+                                    "type": "string",
+                                    "description": "The unique identifier of the failed request."
+                                },
+                                "documentation": {
+                                    "type": "string",
+                                    "description": "A link to relevant documentation."
+                                }
+                            }
+                        }
+                    }
+                },
+                "required": [
+                    "errors"
+                ],
+                "additionalProperties": false
+            }
+        }
+    },
+    "paths": {
+        "/": {
+            "post": {
+                "summary": "Run P-Video-2-Pro-Replace",
+                "description": "P-Video-2-Pro-Replace is Pruna AI's character replacement model that puts the person from one or two photos into an existing video. It keeps the original camera, background, timing, and motion, carries over the source soundtrack with lips that follow it, and replaces two people at once with a prompt that says who replaces whom. It takes source clips from 1 second to 2 minutes and outputs from 480p up to 4K, for UGC ad variations, localized spokesperson videos, and recasting existing footage.",
+                "operationId": "run_prunaai_p_video_2_pro_replace",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RequestBody"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ResponseBody"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request \u2014 Missing or invalid parameters.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized \u2014 No valid API key provided.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "402": {
+                        "description": "Payment Required \u2014 Insufficient account balance.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden \u2014 The API key lacks permissions for this request.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "Too Many Requests \u2014 Rate limit exceeded.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Server Error \u2014 Something went wrong on Runware's end.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable \u2014 Temporarily unavailable (maintenance or capacity).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "security": [
+        {
+            "apiKeyAuth": []
+        }
+    ]
+}

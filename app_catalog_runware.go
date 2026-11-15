@@ -13,6 +13,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -133,6 +134,38 @@ func (a *App) ListRunwareVideoRestyleModels() ([]RunwareModel, error) {
 		models = append(models, RunwareModel{ID: defaultRunwareVideoRestyleModel})
 	}
 	return models, nil
+}
+
+// ListRunwareVideoCharacterModels returns the character-replacement models
+// for the Settings picker shown when runware is the CharacterProvider: the
+// video-to-video entries whose id names a person swap ("replace"/"recast"),
+// minus the background-replacement utilities. Falls back to the verified
+// default when the index is bare.
+func (a *App) ListRunwareVideoCharacterModels() ([]RunwareModel, error) {
+	models, err := a.listRunwareCapabilityModels("video-to-video")
+	if err != nil {
+		return nil, err
+	}
+	character := make([]RunwareModel, 0, len(models))
+	for _, m := range models {
+		if isRunwareVideoCharacterModel(m) {
+			character = append(character, m)
+		}
+	}
+	if len(character) == 0 {
+		character = append(character, RunwareModel{ID: defaultRunwareVideoCharacterModel})
+	}
+	return character, nil
+}
+
+// isRunwareVideoCharacterModel matches the index entries that swap the person
+// in a clip — Pruna's P-Video replace family today.
+func isRunwareVideoCharacterModel(model RunwareModel) bool {
+	id := strings.ToLower(model.ID + " " + model.DocID)
+	if strings.Contains(id, "background") {
+		return false
+	}
+	return strings.Contains(id, "replace") || strings.Contains(id, "recast")
 }
 
 // runwareSchemaCacheFor builds the picker-side schema cache — the same

@@ -34,6 +34,7 @@ import {
   ListRunwareVideoImageModels,
   ListRunwareVideoModels,
   ListRunwareVideoRestyleModels,
+  ListRunwareVideoCharacterModels,
   ListRunwareVideoUpscaleModels,
   ListReplicateImageEditModels,
   ListReplicateLipsyncImageModels,
@@ -98,6 +99,7 @@ function useModelCatalogs() {
   const [runwareVideoExtendModels, setRunwareVideoExtendModels] = useState<main.RunwareModel[]>([]);
   const [runwareVideoUpscaleModels, setRunwareVideoUpscaleModels] = useState<main.RunwareModel[]>([]);
   const [runwareVideoRestyleModels, setRunwareVideoRestyleModels] = useState<main.RunwareModel[]>([]);
+  const [runwareVideoCharacterModels, setRunwareVideoCharacterModels] = useState<main.RunwareModel[]>([]);
   const [runwareSpeechModels, setRunwareSpeechModels] = useState<main.RunwareModel[]>([]);
   const [runwareTranscribeModels, setRunwareTranscribeModels] = useState<main.RunwareModel[]>([]);
   const [runwareSoundEffectModels, setRunwareSoundEffectModels] = useState<main.RunwareModel[]>([]);
@@ -343,6 +345,11 @@ function useModelCatalogs() {
       setRunwareVideoRestyleModels([]);
     }
     try {
+      setRunwareVideoCharacterModels(asArray(await ListRunwareVideoCharacterModels()));
+    } catch {
+      setRunwareVideoCharacterModels([]);
+    }
+    try {
       setRunwareSpeechModels(asArray(await ListRunwareSpeechModels()));
     } catch {
       setRunwareSpeechModels([]);
@@ -497,6 +504,7 @@ function useModelCatalogs() {
     runwareVideoExtendModels,
     runwareVideoUpscaleModels,
     runwareVideoRestyleModels,
+    runwareVideoCharacterModels,
     runwareSpeechModels,
     runwareTranscribeModels,
     runwareSoundEffectModels,

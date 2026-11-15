@@ -47,6 +47,7 @@ import {
   defaultRunwareVideoExtendModel,
   defaultRunwareVideoUpscaleModel,
   defaultRunwareVideoRestyleModel,
+  defaultRunwareVideoCharacterModel,
   defaultRunwareInpaintModel,
   defaultRunwareLipsyncImageModel,
   defaultRunwareLipsyncVideoModel,
@@ -113,6 +114,7 @@ function configValues(config: main.AppConfig) {
   const nextRunwareVideoExtendModel = config.providers?.runware?.videoExtendModel || defaultRunwareVideoExtendModel;
   const nextRunwareVideoUpscaleModel = config.providers?.runware?.videoUpscaleModel || defaultRunwareVideoUpscaleModel;
   const nextRunwareVideoRestyleModel = config.providers?.runware?.videoRestyleModel || defaultRunwareVideoRestyleModel;
+  const nextRunwareVideoCharacterModel = config.providers?.runware?.videoCharacterModel || defaultRunwareVideoCharacterModel;
   const nextRunwareInpaintModel = config.providers?.runware?.inpaintModel || defaultRunwareInpaintModel;
   const nextRunwareLipsyncImageModel = config.providers?.runware?.lipsyncImageModel || defaultRunwareLipsyncImageModel;
   const nextRunwareLipsyncVideoModel = config.providers?.runware?.lipsyncVideoModel || defaultRunwareLipsyncVideoModel;
@@ -158,6 +160,7 @@ function configValues(config: main.AppConfig) {
   const nextMagickBinary = config.providers?.local?.magick?.binary ?? '';
   const nextFalLipsyncImageModel = config.providers?.fal?.lipsyncImageModel || defaultFalLipsyncImageModel;
   const nextFalLipsyncVideoModel = config.providers?.fal?.lipsyncVideoModel || defaultFalLipsyncVideoModel;
+  const nextCharacterProvider: 'fal' | 'runware' = config.models?.characterProvider === 'runware' ? 'runware' : 'fal';
   const nextLipsyncProvider: 'fal' | 'replicate' | 'runware' = config.models?.lipsyncProvider === 'replicate' ? 'replicate' : config.models?.lipsyncProvider === 'runware' ? 'runware' : 'fal';
   const nextSpeechProvider: SpeechProviderID = config.models?.speechProvider === 'ollama' || config.models?.speechProvider === 'replicate' || config.models?.speechProvider === 'runware' ? config.models.speechProvider : 'fal';
   const nextOllamaSpeechModel = config.providers?.ollama?.models?.speech ?? '';
@@ -217,6 +220,7 @@ function configValues(config: main.AppConfig) {
     runwareVideoExtendModel: nextRunwareVideoExtendModel,
     runwareVideoUpscaleModel: nextRunwareVideoUpscaleModel,
     runwareVideoRestyleModel: nextRunwareVideoRestyleModel,
+    runwareVideoCharacterModel: nextRunwareVideoCharacterModel,
     runwareInpaintModel: nextRunwareInpaintModel,
     runwareLipsyncImageModel: nextRunwareLipsyncImageModel,
     runwareLipsyncVideoModel: nextRunwareLipsyncVideoModel,
@@ -261,6 +265,7 @@ function configValues(config: main.AppConfig) {
     sipsBinary: nextSipsBinary,
     magickBinary: nextMagickBinary,
     lipsyncProvider: nextLipsyncProvider,
+    characterProvider: nextCharacterProvider,
     speechProvider: nextSpeechProvider,
     ollamaSpeechModel: nextOllamaSpeechModel,
     replicateSpeechModel: nextReplicateSpeechModel,
@@ -341,6 +346,7 @@ function appConfigPayload(s: AppConfigValues & ConfigKeyFlags) {
         videoExtendModel: s.runwareVideoExtendModel,
         videoUpscaleModel: s.runwareVideoUpscaleModel,
         videoRestyleModel: s.runwareVideoRestyleModel,
+        videoCharacterModel: s.runwareVideoCharacterModel,
         inpaintModel: s.runwareInpaintModel,
         lipsyncImageModel: s.runwareLipsyncImageModel,
         lipsyncVideoModel: s.runwareLipsyncVideoModel,
@@ -403,6 +409,7 @@ function appConfigPayload(s: AppConfigValues & ConfigKeyFlags) {
       videoProvider: s.videoProvider,
       inpaintProvider: s.inpaintProvider,
       lipsyncProvider: s.lipsyncProvider,
+      characterProvider: s.characterProvider,
       speechProvider: s.speechProvider,
       audioProvider: s.audioProvider,
       transcriptionProvider: s.transcriptionProvider,

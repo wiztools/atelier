@@ -140,12 +140,12 @@ export function useAppModel() {
     falVideoExtendModel, falVideoImageModel, falVideoKeyframeModel, falVideoModel, falVideoMotionModel, falVideoCharacterModel,
     falVideoReframeModel, falVideoRestyleModel, falVideoUpscaleModel, falVoiceDesignModel, ffmpegBinary,
     ffprobeBinary, globalModelSelection, harnessModel, harnessModels, harnessProvider, imageAspectRatio,
-    imageModel, imageProvider, imageSizePreset, imageSteps, inpaintProvider, lipsyncProvider, magickBinary,
+    imageModel, imageProvider, imageSizePreset, imageSteps, inpaintProvider, lipsyncProvider, characterProvider, magickBinary,
     mediaTimeoutMinutes, model, ollamaNumCtx, ollamaSpeechModel, openaiCompatibleBaseURL,
     openaiCompatibleModel, patchSettingsModelSelection, primaryModels, primaryProvider,
     replicateAudioExtendModel, replicateImageEditModel, replicateInpaintModel, replicateLipsyncImageModel,
     replicateLipsyncVideoModel, replicateModel, runwareModel, runwareImageEditModel, runwareUpscaleModel, runwareVideoModel, runwareVideoImageModel,
-    runwareVideoExtendModel, runwareVideoUpscaleModel, runwareVideoRestyleModel, runwareInpaintModel,
+    runwareVideoExtendModel, runwareVideoUpscaleModel, runwareVideoRestyleModel, runwareVideoCharacterModel, runwareInpaintModel,
     runwareTranscribeModel, runwareSpeechModel, runwareSoundEffectsModel, runwareSoundEffectsVideoModel, runwareLipsyncImageModel,
     runwareLipsyncVideoModel, replicateSoundEffectsModel, replicateSoundEffectsVideoModel,
     replicateSpeechModel, replicateTranscribeModel, replicateUpscaleModel, replicateVideoExtendModel,
@@ -200,6 +200,7 @@ export function useAppModel() {
     runwareVideoExtendModels,
     runwareVideoUpscaleModels,
     runwareVideoRestyleModels,
+    runwareVideoCharacterModels,
     runwareSpeechModels,
     runwareTranscribeModels,
     runwareSoundEffectModels,
@@ -809,6 +810,7 @@ export function useAppModel() {
     const imageProvider = overrides.imageProvider === 'fal' || overrides.imageProvider === 'replicate' || overrides.imageProvider === 'openai-compatible' ? overrides.imageProvider : global.imageProvider;
     const videoProvider = overrides.videoProvider === 'replicate' ? 'replicate' : overrides.videoProvider === 'runware' ? 'runware' : overrides.videoProvider === 'fal' ? 'fal' : global.videoProvider;
     const inpaintProvider = overrides.inpaintProvider === 'replicate' ? 'replicate' : overrides.inpaintProvider === 'runware' ? 'runware' : overrides.inpaintProvider === 'fal' ? 'fal' : global.inpaintProvider;
+    const characterProvider = overrides.characterProvider === 'runware' ? 'runware' : overrides.characterProvider === 'fal' ? 'fal' : global.characterProvider;
     const lipsyncProvider = overrides.lipsyncProvider === 'replicate' ? 'replicate' : overrides.lipsyncProvider === 'runware' ? 'runware' : overrides.lipsyncProvider === 'fal' ? 'fal' : global.lipsyncProvider;
     const speechProvider: SpeechProviderID = overrides.speechProvider === 'ollama' || overrides.speechProvider === 'replicate' || overrides.speechProvider === 'runware' || overrides.speechProvider === 'fal' ? overrides.speechProvider : global.speechProvider;
     const audioProvider = overrides.audioProvider === 'replicate' ? 'replicate' : overrides.audioProvider === 'runware' ? 'runware' : overrides.audioProvider === 'fal' ? 'fal' : global.audioProvider;
@@ -823,6 +825,7 @@ export function useAppModel() {
       videoProvider,
       inpaintProvider,
       lipsyncProvider,
+      characterProvider,
       speechProvider,
       audioProvider,
       falModel: overrides.imageModel && imageProvider === 'fal' ? overrides.imageModel : global.falModel,
@@ -863,7 +866,8 @@ export function useAppModel() {
       falVideoKeyframeModel: overrides.videoKeyframeModel || global.falVideoKeyframeModel,
       falVideoExtendModel: overrides.videoExtendModel && videoProvider !== 'replicate' ? overrides.videoExtendModel : global.falVideoExtendModel,
       falVideoMotionModel: overrides.videoMotionModel || global.falVideoMotionModel,
-      falVideoCharacterModel: overrides.videoCharacterModel || global.falVideoCharacterModel,
+      falVideoCharacterModel: overrides.videoCharacterModel && characterProvider === 'fal' ? overrides.videoCharacterModel : global.falVideoCharacterModel,
+      runwareVideoCharacterModel: overrides.videoCharacterModel && characterProvider === 'runware' ? overrides.videoCharacterModel : global.runwareVideoCharacterModel,
       falAudioModel: overrides.audioModel && speechProvider === 'fal' ? overrides.audioModel : global.falAudioModel,
       ollamaSpeechModel: overrides.audioModel && speechProvider === 'ollama' ? overrides.audioModel : global.ollamaSpeechModel,
       replicateSpeechModel: overrides.audioModel && speechProvider === 'replicate' ? overrides.audioModel : global.replicateSpeechModel,
@@ -1042,7 +1046,8 @@ export function useAppModel() {
       if (patch.falVideoKeyframeModel !== undefined) next.add('videoKeyframeModel');
       if (patch.falVideoExtendModel !== undefined || patch.replicateVideoExtendModel !== undefined) next.add('videoExtendModel');
       if (patch.falVideoMotionModel !== undefined) next.add('videoMotionModel');
-      if (patch.falVideoCharacterModel !== undefined) next.add('videoCharacterModel');
+      if (patch.falVideoCharacterModel !== undefined || patch.runwareVideoCharacterModel !== undefined) next.add('videoCharacterModel');
+      if (patch.characterProvider !== undefined) next.add('characterProvider');
       if (patch.falVideoUpscaleModel !== undefined || patch.replicateVideoUpscaleModel !== undefined) next.add('videoUpscaleModel');
       if (patch.falVideoReframeModel !== undefined || patch.replicateVideoReframeModel !== undefined) next.add('videoReframeModel');
       if (patch.falVideoRestyleModel !== undefined || patch.replicateVideoRestyleModel !== undefined) next.add('videoRestyleModel');
@@ -1152,7 +1157,11 @@ export function useAppModel() {
           next.runwareVideoExtendModel = global.runwareVideoExtendModel;
           break;
         case 'videoMotionModel': next.falVideoMotionModel = global.falVideoMotionModel; break;
-        case 'videoCharacterModel': next.falVideoCharacterModel = global.falVideoCharacterModel; break;
+        case 'videoCharacterModel':
+          next.falVideoCharacterModel = global.falVideoCharacterModel;
+          next.runwareVideoCharacterModel = global.runwareVideoCharacterModel;
+          break;
+        case 'characterProvider': next.characterProvider = global.characterProvider; break;
         case 'videoUpscaleModel':
           next.falVideoUpscaleModel = global.falVideoUpscaleModel;
           next.replicateVideoUpscaleModel = global.replicateVideoUpscaleModel;
@@ -1414,6 +1423,7 @@ export function useAppModel() {
     runwareVideoExtendModels,
     runwareVideoUpscaleModels,
     runwareVideoRestyleModels,
+    runwareVideoCharacterModels,
     runwareSpeechModels,
     runwareTranscribeModels,
     runwareSoundEffectModels,

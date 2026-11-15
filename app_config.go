@@ -221,6 +221,10 @@ type ConfigRunware struct {
 	// default) — both follow VideoProvider like the slots above.
 	VideoUpscaleModel string `json:"videoUpscaleModel,omitempty"`
 	VideoRestyleModel string `json:"videoRestyleModel,omitempty"`
+	// VideoCharacterModel is the character-replacement model replace_character
+	// uses when runware is the CharacterProvider (P-Video-2-Pro-Replace by
+	// default). It follows CharacterProvider, not VideoProvider.
+	VideoCharacterModel string `json:"videoCharacterModel,omitempty"`
 	// LipsyncImageModel is the image-face lipsync model (VEED Fabric by
 	// default) and LipsyncVideoModel the video-face model (KlingAI Lip-Sync
 	// by default) when runware is the LipsyncProvider.
@@ -445,6 +449,12 @@ type ConfigModels struct {
 	// (audio plus an image or video face), so tying it to the video backend
 	// would surprise. Normalized in mergeAppConfig like VideoProvider.
 	LipsyncProvider string `json:"lipsyncProvider,omitempty"`
+	// CharacterProvider selects the replace_character backend: "fal" (the
+	// default) or "runware". Its own dimension, the LipsyncProvider shape:
+	// character replacement does not follow VideoProvider, so a user can
+	// generate on one backend and recast on another. Normalized in
+	// mergeAppConfig.
+	CharacterProvider string `json:"characterProvider,omitempty"`
 	// SpeechProvider selects the generate_speech backend: "fal" (the
 	// default), "ollama" — Ollama's speech models (phonon and friends,
 	// the "speech" capability) served through its OpenAI-compatible
@@ -830,6 +840,16 @@ func mergeAppConfig(config AppConfig) AppConfig {
 		config.Models.LipsyncProvider = strings.TrimSpace(config.Models.LipsyncProvider)
 	default:
 		config.Models.LipsyncProvider = "fal"
+	}
+	// CharacterProvider selects the replace_character backend ("fal" |
+	// "runware"). Unknown or empty normalizes to "fal", where the tool
+	// shipped first; the model slots carry no forced defaults — the resolver
+	// falls back to each provider's constant.
+	switch strings.TrimSpace(config.Models.CharacterProvider) {
+	case "fal", "runware":
+		config.Models.CharacterProvider = strings.TrimSpace(config.Models.CharacterProvider)
+	default:
+		config.Models.CharacterProvider = "fal"
 	}
 	// SpeechProvider selects the generate_speech backend ("fal" | "ollama" |
 	// "replicate"). Unknown or empty normalizes to "fal": speech was

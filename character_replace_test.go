@@ -370,3 +370,159 @@ func TestTriagePromptRoutesCharacterReplacement(t *testing.T) {
 		}
 	}
 }
+
+// runwareCharacterFixtureSchema parses a captured Runware schema the way the
+// runware schema cache does (rewrap, then the shared parser).
+func runwareCharacterFixtureSchema(t *testing.T, name string) *ModelInputSchema {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("testdata", "runware-schemas", name+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped, err := rewrapRunwareSchema(raw)
+	if err != nil {
+		t.Fatalf("rewrap %s: %v", name, err)
+	}
+	schema, err := parseModelInputSchema(wrapped)
+	if err != nil {
+		t.Fatalf("parse %s: %v", name, err)
+	}
+	return schema
+}
+
+// TestResolveRunwareCharacterTaskPerPerson pins P-Video-2-Pro-Replace: its
+// references are documented "one image per person", so each character sends
+// its frontal photo (left to right), extra angles drop with a notice, a third
+// person refuses (maxItems 2), the soundtrack rides settings.preserveAudio,
+// and the task asks for sync delivery.
+func TestResolveRunwareCharacterTaskPerPerson(t *testing.T) {
+	schema := runwareCharacterFixtureSchema(t, "prunaai-p-video-2-pro-replace")
+	task, notices, _, err := resolveRunwareCharacterTask(schema, VideoCharacterReplaceRequest{
+		Model:      defaultRunwareVideoCharacterModel,
+		Video:      "11111111-1111-4111-8111-111111111111",
+		Characters: characters([]string{"https://x/a", "https://x/a2"}, []string{"https://x/b"}),
+		Prompt:     "the man on the left becomes A",
+		Resolution: "1080p",
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	inputs, _ := task["inputs"].(map[string]any)
+	refs, _ := inputs["referenceImages"].([]string)
+	if len(refs) != 2 || refs[0] != "https://x/a" || refs[1] != "https://x/b" {
+		t.Errorf("referenceImages = %v, want one frontal per person", inputs["referenceImages"])
+	}
+	if inputs["video"] != "11111111-1111-4111-8111-111111111111" {
+		t.Errorf("video = %v, want the uploaded mediaUUID", inputs["video"])
+	}
+	if task["positivePrompt"] != "the man on the left becomes A" || task["deliveryMethod"] != "sync" || task["outputFormat"] != "MP4" {
+		t.Errorf("task = %v, want prompt, sync delivery, and MP4", task)
+	}
+	if settings, _ := task["settings"].(map[string]any); settings["preserveAudio"] != true {
+		t.Errorf("settings = %v, want preserveAudio true by default", task["settings"])
+	}
+	if !strings.Contains(joinedNotices(notices), "one reference photo per person") {
+		t.Errorf("notices = %v, want the extra-angle drop explained", notices)
+	}
+	_, _, _, err = resolveRunwareCharacterTask(schema, VideoCharacterReplaceRequest{
+		Model: defaultRunwareVideoCharacterModel, Video: "v",
+		Characters: characters([]string{"https://x/a"}, []string{"https://x/b"}, []string{"https://x/c"}),
+	})
+	if !errors.Is(err, errCharacterReplaceUnsupported) || !strings.Contains(err.Error(), "at most 2 people") {
+		t.Errorf("three people err = %v, want the maxItems refusal", err)
+	}
+}
+
+// TestResolveRunwareCharacterTaskSingleCharacter pins P-Video-Replace: its
+// references carry no per-person wording, so they are ONE character's angles
+// (capped at 3 with a notice) and a second character refuses.
+func TestResolveRunwareCharacterTaskSingleCharacter(t *testing.T) {
+	schema := runwareCharacterFixtureSchema(t, "prunaai-p-video-replace")
+	keep := false
+	task, notices, _, err := resolveRunwareCharacterTask(schema, VideoCharacterReplaceRequest{
+		Model:      "prunaai:p-video@replace",
+		Video:      "https://x/v.mp4",
+		Characters: characters([]string{"https://x/1", "https://x/2", "https://x/3", "https://x/4"}),
+		KeepAudio:  &keep,
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	refs, _ := task["inputs"].(map[string]any)["referenceImages"].([]string)
+	if len(refs) != 3 || refs[2] != "https://x/3" {
+		t.Errorf("referenceImages = %v, want the first three angles", refs)
+	}
+	if settings, _ := task["settings"].(map[string]any); settings["preserveAudio"] != false {
+		t.Errorf("settings = %v, want the explicit false honored", task["settings"])
+	}
+	if !strings.Contains(joinedNotices(notices), "at most 3 reference images") {
+		t.Errorf("notices = %v, want the trim explained", notices)
+	}
+	_, _, _, err = resolveRunwareCharacterTask(schema, VideoCharacterReplaceRequest{
+		Model: "prunaai:p-video@replace", Video: "v",
+		Characters: characters([]string{"https://x/a"}, []string{"https://x/b"}),
+	})
+	if !errors.Is(err, errCharacterReplaceUnsupported) || !strings.Contains(err.Error(), "single character") {
+		t.Errorf("two characters err = %v, want the single-character refusal", err)
+	}
+}
+
+// TestCharacterProviderRouting pins the provider dimension: the gate checks
+// the routed provider's key, the default model and activity stamp follow it,
+// the fal pricing batch never carries the Runware id, and a conversation
+// override lands its model on the overridden provider's slot.
+func TestCharacterProviderRouting(t *testing.T) {
+	keyring.MockInit()
+	if err := saveRunwareAPIKey("rw-test-key"); err != nil {
+		t.Fatalf("saveRunwareAPIKey: %v", err)
+	}
+	t.Cleanup(func() { _ = clearRunwareAPIKey() })
+	runware := mergeAppConfig(AppConfig{Models: ConfigModels{CharacterProvider: "runware"}})
+	if !videoCharacterReplaceConfigured(runware) {
+		t.Error("configured(runware key, runware provider) = false, want true")
+	}
+	if videoCharacterReplaceConfigured(mergeAppConfig(AppConfig{})) {
+		t.Error("configured(no fal key, fal provider) = true, want false")
+	}
+	if got := resolveDefaultVideoCharacterModel(runware); got != defaultRunwareVideoCharacterModel {
+		t.Errorf("runware default = %q", got)
+	}
+	if contains(configuredFalEndpointIDs(runware), defaultRunwareVideoCharacterModel) {
+		t.Error("the fal pricing batch must not carry the Runware model id")
+	}
+	if got := mergeAppConfig(AppConfig{Models: ConfigModels{CharacterProvider: "bogus"}}).Models.CharacterProvider; got != "fal" {
+		t.Errorf("unknown provider normalized to %q, want fal", got)
+	}
+	def := videoCharacterReplaceToolDefinition(runware)
+	activity := def.Activity(HarnessToolResult{Name: "replace_character", Status: "completed", Result: ToolVideoResult{Model: defaultRunwareVideoCharacterModel, Count: 1}})
+	if activity.Provider != "runware" {
+		t.Errorf("activity provider = %q, want runware", activity.Provider)
+	}
+	if !strings.Contains(def.Description, "Runware") {
+		t.Error("the description should name the routed provider")
+	}
+
+	overridden, _, err := overlayModelOverrides(mergeAppConfig(AppConfig{}), ChatRequest{}, ConversationModelOverrides{CharacterProvider: "runware", VideoCharacterModel: "prunaai:p-video@replace"})
+	if err != nil {
+		t.Fatalf("overlay: %v", err)
+	}
+	if overridden.Providers.Runware.VideoCharacterModel != "prunaai:p-video@replace" || overridden.Providers.Fal.VideoCharacterModel != "" {
+		t.Errorf("override slots: runware %q fal %q", overridden.Providers.Runware.VideoCharacterModel, overridden.Providers.Fal.VideoCharacterModel)
+	}
+	if err := validateConversationModelOverrides(ConversationModelOverrides{CharacterProvider: "replicate"}); err == nil {
+		t.Error("replicate is not a character provider and must be refused")
+	}
+}
+
+func TestIsRunwareVideoCharacterModel(t *testing.T) {
+	for id, want := range map[string]bool{
+		"prunaai:p-video@2-pro-replace":           true,
+		"prunaai:p-video@replace":                 true,
+		"bria:11@1 bria-image-replace-background": false,
+		"prunaai:p-video@animate":                 false,
+	} {
+		if got := isRunwareVideoCharacterModel(RunwareModel{ID: id}); got != want {
+			t.Errorf("isRunwareVideoCharacterModel(%q) = %v, want %v", id, got, want)
+		}
+	}
+}

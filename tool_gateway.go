@@ -1369,10 +1369,64 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			return generated, genErr
 		}
 		gateway.tools.ReplaceCharacter = func(ctx context.Context, req VideoCharacterReplaceRequest) (GeneratedVideo, error) {
-			// Cloud-only and fal-only (it does not follow VideoProvider):
-			// airplane mode refuses the call.
+			// Cloud-only (fal or Runware, by CharacterProvider — not
+			// VideoProvider): airplane mode refuses the call.
 			if err := airplaneMediaError(config, "replace_character"); err != nil {
 				return GeneratedVideo{}, err
+			}
+			if resolveCharacterProvider(config) == "runware" {
+				apiKey, err := loadRunwareAPIKey()
+				if err != nil {
+					return GeneratedVideo{}, err
+				}
+				if strings.TrimSpace(apiKey) == "" {
+					return GeneratedVideo{}, errRunwareKeyNotConfigured
+				}
+				client := newRunwareClient(app.client, apiKey)
+				var uploads, diagnostics []string
+				// inputs.video validates uuid/uri only (no data URIs, unlike
+				// images), so an inline clip uploads UNCONDITIONALLY — the
+				// transcription rule — and an upload failure fails the call
+				// rather than sending a payload the endpoint refuses.
+				if strings.HasPrefix(strings.TrimSpace(req.Video), "data:") {
+					mediaUUID, err := client.UploadMedia(ctx, req.Video)
+					if err != nil {
+						return GeneratedVideo{}, fmt.Errorf("uploading the source clip to Runware failed: %w", err)
+					}
+					req.Video = mediaUUID
+					uploads = append(uploads, mediaUUID)
+				}
+				for c := range req.Characters {
+					images := ensureModelSafeImages(ctx, config, req.Characters[c].Images)
+					resolved, imageUploads, imageDiags := client.ResolveImageInputs(ctx, images)
+					req.Characters[c].Images = resolved
+					uploads = append(uploads, imageUploads...)
+					diagnostics = append(diagnostics, imageDiags...)
+				}
+				// Deferred after every append: Go evaluates defer arguments
+				// immediately.
+				defer client.CleanupUploads(uploads)
+				schema := runwareSchemaCache.Get(ctx, req.Model)
+				task, notices, taskDiagnostics, err := resolveRunwareCharacterTask(schema, req)
+				diagnostics = append(diagnostics, taskDiagnostics...)
+				if err != nil {
+					return GeneratedVideo{Notices: notices}, err
+				}
+				job := &mediaJob{}
+				client.jobSink = job
+				generated, recovered, genErr := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+					func(jctx context.Context) (GeneratedVideo, error) {
+						return client.GenerateVideo(jctx, task)
+					},
+					client.CancelMediaJob,
+					client.RecoverVideoJob,
+				)
+				if genErr == nil && recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
+				generated.Notices = notices
+				generated.Diagnostics = diagnostics
+				return generated, genErr
 			}
 			apiKey, err := loadFalAPIKey()
 			if err != nil {

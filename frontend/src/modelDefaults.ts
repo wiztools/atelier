@@ -90,6 +90,8 @@ const defaultRunwareVideoImageModel = 'klingai:kling-video@4.0';
 const defaultRunwareVideoExtendModel = 'google:3@2';
 const defaultRunwareVideoUpscaleModel = 'bfl:flux@video-upscale';
 const defaultRunwareVideoRestyleModel = 'bfl:flux@video-edit-fast';
+// Mirrors defaultRunwareVideoCharacterModel (runware_client.go).
+const defaultRunwareVideoCharacterModel = 'prunaai:p-video@2-pro-replace';
 // upscale_image's runware model — Real-ESRGAN, the ESRGAN family fal's and
 // Replicate's defaults speak. Mirrors the Go const in runware_client.go.
 const defaultRunwareUpscaleModel = 'runware:504@1';
@@ -270,6 +272,7 @@ export {
   defaultRunwareVideoExtendModel,
   defaultRunwareVideoUpscaleModel,
   defaultRunwareVideoRestyleModel,
+  defaultRunwareVideoCharacterModel,
   defaultRunwareUpscaleModel,
   defaultRunwareInpaintModel,
   defaultRunwareLipsyncImageModel,

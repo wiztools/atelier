@@ -331,23 +331,158 @@ func splitCharacterReferences(images []string, counts []int) ([]CharacterReferen
 	return characters, nil
 }
 
-// videoCharacterReplaceConfigured gates the replace_character tool: fal-only
-// (it does not follow VideoProvider), so it needs a fal.ai key, and airplane
-// mode drops it like every cloud tool.
+// resolveCharacterProvider is the routing truth for replace_character — the
+// gate, the default model, the gateway branch, and the activity stamp all
+// read it. Its own dimension (Models.CharacterProvider): the tool does not
+// follow VideoProvider.
+func resolveCharacterProvider(config AppConfig) string {
+	if strings.TrimSpace(config.Models.CharacterProvider) == "runware" {
+		return "runware"
+	}
+	return "fal"
+}
+
+// videoCharacterReplaceConfigured gates the replace_character tool on the
+// routed provider's key; airplane mode drops it like every cloud tool.
 func videoCharacterReplaceConfigured(config AppConfig) bool {
 	if airplaneModeActive(config) {
 		return false
 	}
+	if resolveCharacterProvider(config) == "runware" {
+		return runwareKeyConfigured()
+	}
 	return falKeyConfigured()
 }
 
-// resolveDefaultVideoCharacterModel returns the endpoint replace_character uses
-// when the call doesn't override it.
+// resolveDefaultVideoCharacterModel returns the model replace_character uses
+// when the call doesn't override it, routing by the character provider.
 func resolveDefaultVideoCharacterModel(config AppConfig) string {
+	if resolveCharacterProvider(config) == "runware" {
+		if model := strings.TrimSpace(config.Providers.Runware.VideoCharacterModel); model != "" {
+			return model
+		}
+		return defaultRunwareVideoCharacterModel
+	}
+	return resolveFalVideoCharacterModel(config)
+}
+
+// resolveFalVideoCharacterModel is the fal slot alone — the pricing batch
+// reads it so a runware-routed config never sends a Runware AIR id to fal's
+// all-or-nothing pricing API.
+func resolveFalVideoCharacterModel(config AppConfig) string {
 	if model := strings.TrimSpace(config.Providers.Fal.VideoCharacterModel); model != "" {
 		return model
 	}
 	return defaultFalVideoCharacterModel
+}
+
+// runwarePerPersonReferencesPattern reads a referenceImages description that
+// documents one photo per PERSON (P-Video-2-Pro-Replace: "One image per person
+// to replace, matched to the people in the video from left to right"). Without
+// that wording the references are angles of ONE character (P-Video-Replace).
+var runwarePerPersonReferencesPattern = regexp.MustCompile(`(?i)\bper person\b`)
+
+// resolveRunwareCharacterTask maps the canonical character-replacement request
+// onto one Runware videoInference task. Runware's vocabulary is standardized
+// (inputs.video + inputs.referenceImages, settings.preserveAudio), so the
+// schema only decides whether a field may be written and how the references
+// are read — one per person, or one character's angles.
+func resolveRunwareCharacterTask(schema *ModelInputSchema, req VideoCharacterReplaceRequest) (map[string]any, []string, []string, error) {
+	task := runwareTaskBase("videoInference", req.Model)
+	var notices, diagnostics []string
+	if schema == nil {
+		notices = append(notices, "Couldn't load the Runware model's parameter schema; generated with default parameters.")
+	}
+	if strings.TrimSpace(req.Video) == "" {
+		return nil, nil, nil, errors.New("replace_character requires a source video")
+	}
+	characters := make([][]string, 0, len(req.Characters))
+	for _, character := range req.Characters {
+		images := make([]string, 0, len(character.Images))
+		for _, img := range character.Images {
+			if strings.TrimSpace(img) != "" {
+				images = append(images, runwareImageRef(img))
+			}
+		}
+		if len(images) > 0 {
+			characters = append(characters, images)
+		}
+	}
+	if len(characters) == 0 {
+		return nil, nil, nil, errors.New("replace_character requires at least one character reference image")
+	}
+	if !runwareDeclaresInput(schema, "video") {
+		return nil, nil, nil, fmt.Errorf("%w: Runware model %q takes no source-video input; pick a character-replacement model in Settings", errCharacterReplaceUnsupported, req.Model)
+	}
+	if !runwareDeclaresInput(schema, "referenceImages") {
+		return nil, nil, nil, fmt.Errorf("%w: Runware model %q takes no reference images; pick a character-replacement model in Settings", errCharacterReplaceUnsupported, req.Model)
+	}
+	refsProp := runwareInputsNested(schema)["referenceImages"]
+	maxItems := refsProp.MaxItems
+	var refs []string
+	if runwarePerPersonReferencesPattern.MatchString(refsProp.Description) {
+		extraAngles := false
+		for _, images := range characters {
+			refs = append(refs, images[0])
+			if len(images) > 1 {
+				extraAngles = true
+			}
+		}
+		if maxItems > 0 && len(refs) > maxItems {
+			return nil, nil, nil, fmt.Errorf("%w: Runware model %q replaces at most %d people per clip, and %d were requested", errCharacterReplaceUnsupported, req.Model, maxItems, len(refs))
+		}
+		if extraAngles {
+			notices = append(notices, fmt.Sprintf("The selected model %q takes one reference photo per person; only the first image of each character sheet was sent.", req.Model))
+		}
+	} else {
+		if len(characters) > 1 {
+			return nil, nil, nil, fmt.Errorf("%w: Runware model %q replaces a single character and %d were requested — replace one character per call, or pick a multi-person model (%s) in Settings", errCharacterReplaceUnsupported, req.Model, len(characters), defaultRunwareVideoCharacterModel)
+		}
+		refs = characters[0]
+		if maxItems > 0 && len(refs) > maxItems {
+			refs = refs[:maxItems]
+			notices = append(notices, fmt.Sprintf("The selected model %q takes at most %d reference images per character; the first %d were sent.", req.Model, maxItems, maxItems))
+		}
+	}
+	runwareSetInput(schema, task, "video", runwareVideoRef(req.Video))
+	runwareSetInput(schema, task, "referenceImages", refs)
+
+	if prompt := strings.TrimSpace(req.Prompt); prompt != "" {
+		if runwareDeclares(schema, "positivePrompt") {
+			task["positivePrompt"] = prompt
+		} else {
+			notices = append(notices, fmt.Sprintf("Runware model %q takes no prompt; the replacement follows the reference images alone.", req.Model))
+		}
+	}
+	keep := true
+	if req.KeepAudio != nil {
+		keep = *req.KeepAudio
+	}
+	if settingsProp, ok := schema.property("settings"); ok && settingsProp.Kind == schemaObject && hasKey(settingsProp.Nested, "preserveAudio") {
+		task["settings"] = map[string]any{"preserveAudio": keep}
+	} else if req.KeepAudio != nil && !keep {
+		notices = append(notices, fmt.Sprintf("Runware model %q has no soundtrack control; its own audio behavior applies.", req.Model))
+	}
+	if tier := strings.TrimSpace(req.Resolution); tier != "" {
+		if prop, ok := schema.property("resolution"); ok {
+			if canonical, allowed := enumValueFor(prop, tier); allowed {
+				task["resolution"] = canonical
+			} else {
+				notices = append(notices, fmt.Sprintf("%q isn't a resolution %q offers (%s); the model's default was used.", tier, req.Model, strings.Join(prop.Enum, ", ")))
+			}
+		} else {
+			notices = append(notices, fmt.Sprintf("Runware model %q has no resolution control; ignoring the requested %s.", req.Model, tier))
+		}
+	}
+	if runwareDeclares(schema, "outputFormat") {
+		task["outputFormat"] = "MP4"
+	}
+	// The sync window, the resolveRunwareVideoTask rule: the default "async"
+	// answers with a bare acknowledgment row.
+	if runwareDeclares(schema, "deliveryMethod") {
+		task["deliveryMethod"] = "sync"
+	}
+	return task, notices, diagnostics, nil
 }
 
 // videoCharacterReplaceToolDefinition exposes replace_character. The result
@@ -359,7 +494,7 @@ func videoCharacterReplaceToolDefinition(config AppConfig) HarnessToolDefinition
 		Title:       "Replace character",
 		Risk:        HarnessToolRiskRead,
 		Example:     `{"name":"replace_character","content":"the woman in the red coat becomes the character in the reference images"}`,
-		Description: "Use this when the user wants the PERSON in an attached video swapped for a character shown in attached images while the video's own scene, camera, motion, performance, and timing are kept — \"replace the actor with my character\", \"put this character in the clip\", \"swap him for @img_…\". Requires an attached video and at least one attached image of the new character. This is not motion control (generate_video with an image + a video keeps the IMAGE's scene and only borrows the motion) and not restyle_video (which re-renders the whole look). By default every attached image is ONE character's sheet (a front view plus extra angles); when several people are being replaced, pass characterImageCounts listing how many of the attached images belong to each person, in left-to-right order of the people in the clip (e.g. [2,1]). content is an optional steer — who becomes whom, what else to keep or change. The clip's soundtrack is kept where the model supports it; pass keepAudio:false only when the user wants it dropped. Runs on fal.ai, takes a minute or more, and source clips are capped (commonly 3-30 seconds depending on the model).",
+		Description: "Use this when the user wants the PERSON in an attached video swapped for a character shown in attached images while the video's own scene, camera, motion, performance, and timing are kept — \"replace the actor with my character\", \"put this character in the clip\", \"swap him for @img_…\". Requires an attached video and at least one attached image of the new character. This is not motion control (generate_video with an image + a video keeps the IMAGE's scene and only borrows the motion) and not restyle_video (which re-renders the whole look). By default every attached image is ONE character's sheet (a front view plus extra angles); when several people are being replaced, pass characterImageCounts listing how many of the attached images belong to each person, in left-to-right order of the people in the clip (e.g. [2,1]). content is an optional steer — who becomes whom, what else to keep or change. The clip's soundtrack is kept where the model supports it; pass keepAudio:false only when the user wants it dropped. Runs on the configured character-replacement provider (" + characterProviderLabel(config) + "), takes a minute or more, and source clips are capped by the model (about 10 seconds on Kling o1, 30 on Recast, 2 minutes on Pruna's P-Video replace models).",
 		ParamSchema: videoCharacterReplaceParamSchema(),
 		Validate: func(prefix string, call HarnessToolCall) []string {
 			for _, n := range call.CharacterImageCounts {
@@ -424,8 +559,13 @@ func videoCharacterReplaceToolDefinition(config AppConfig) HarnessToolDefinition
 		Activity: func(result HarnessToolResult) HarnessToolActivity {
 			activity := defaultHarnessToolActivity(result)
 			if typed, ok := result.Result.(ToolVideoResult); ok {
-				activity.Provider = "fal"
-				activity.Command = []string{"fal", "replace-character", typed.Model}
+				// The builder stamps the routed provider itself (captured from
+				// the config the definition was built against — the lipsync
+				// pattern): the engine layer would attribute a video result to
+				// VideoProvider, which this tool does not follow.
+				provider := resolveCharacterProvider(config)
+				activity.Provider = provider
+				activity.Command = []string{provider, "replace-character", typed.Model}
 			}
 			return activity
 		},
@@ -468,4 +608,12 @@ func parseCharacterImageCounts(raw string) []int {
 		counts = append(counts, n)
 	}
 	return counts
+}
+
+// characterProviderLabel names the routed backend for the tool description.
+func characterProviderLabel(config AppConfig) string {
+	if resolveCharacterProvider(config) == "runware" {
+		return "Runware"
+	}
+	return "fal.ai"
 }

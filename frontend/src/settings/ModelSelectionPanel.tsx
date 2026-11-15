@@ -18,6 +18,7 @@ import {
   defaultFalVideoExtendModel,
   defaultFalVideoMotionModel,
   defaultFalVideoCharacterModel,
+  defaultRunwareVideoCharacterModel,
   defaultFalVideoUpscaleModel,
   defaultFalVideoReframeModel,
   defaultFalVideoRestyleModel,
@@ -223,6 +224,7 @@ type ModelSelectionValue = {
   runwareVideoExtendModel: string;
   runwareVideoUpscaleModel: string;
   runwareVideoRestyleModel: string;
+  runwareVideoCharacterModel: string;
   runwareInpaintModel: string;
   runwareSpeechModel: string;
   runwareTranscribeModel: string;
@@ -263,6 +265,7 @@ type ModelSelectionValue = {
   falLipsyncImageModel: string;
   falLipsyncVideoModel: string;
   lipsyncProvider: 'fal' | 'replicate' | 'runware';
+  characterProvider: 'fal' | 'runware';
   speechProvider: SpeechProviderID;
   ollamaSpeechModel: string;
   replicateSpeechModel: string;
@@ -353,6 +356,7 @@ function overrideKeysFromRecord(overrides: main.ConversationModelOverrides | nul
   if (overrides.soundDuration) keys.add('soundDuration');
   if (overrides.audioExtendDuration) keys.add('audioExtendDuration');
   if (overrides.lipsyncProvider) keys.add('lipsyncProvider');
+  if (overrides.characterProvider) keys.add('characterProvider');
   if (overrides.lipsyncImageModel) keys.add('lipsyncImageModel');
   if (overrides.lipsyncVideoModel) keys.add('lipsyncVideoModel');
   return keys;
@@ -391,7 +395,8 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
   if (keys.has('videoKeyframeModel')) payload.videoKeyframeModel = draft.falVideoKeyframeModel;
   if (keys.has('videoExtendModel')) payload.videoExtendModel = draft.videoProvider === 'replicate' ? draft.replicateVideoExtendModel : draft.videoProvider === 'runware' ? draft.runwareVideoExtendModel : draft.falVideoExtendModel;
   if (keys.has('videoMotionModel')) payload.videoMotionModel = draft.falVideoMotionModel;
-  if (keys.has('videoCharacterModel')) payload.videoCharacterModel = draft.falVideoCharacterModel;
+  if (keys.has('characterProvider')) payload.characterProvider = draft.characterProvider;
+  if (keys.has('videoCharacterModel')) payload.videoCharacterModel = draft.characterProvider === 'runware' ? draft.runwareVideoCharacterModel : draft.falVideoCharacterModel;
   if (keys.has('videoUpscaleModel')) payload.videoUpscaleModel = draft.videoProvider === 'replicate' ? draft.replicateVideoUpscaleModel : draft.videoProvider === 'runware' ? draft.runwareVideoUpscaleModel : draft.falVideoUpscaleModel;
   if (keys.has('videoReframeModel')) payload.videoReframeModel = draft.videoProvider === 'replicate' ? draft.replicateVideoReframeModel : draft.falVideoReframeModel;
   if (keys.has('videoRestyleModel')) payload.videoRestyleModel = draft.videoProvider === 'replicate' ? draft.replicateVideoRestyleModel : draft.videoProvider === 'runware' ? draft.runwareVideoRestyleModel : draft.falVideoRestyleModel;
@@ -466,6 +471,7 @@ function ModelSelectionPanel({
     runwareVideoExtendModels: main.RunwareModel[];
     runwareVideoUpscaleModels: main.RunwareModel[];
     runwareVideoRestyleModels: main.RunwareModel[];
+    runwareVideoCharacterModels: main.RunwareModel[];
     runwareSpeechModels: main.RunwareModel[];
     runwareTranscribeModels: main.RunwareModel[];
     runwareSoundEffectModels: main.RunwareModel[];
@@ -553,6 +559,7 @@ function ModelSelectionPanel({
   const runwareVideoExtendOptions = falModelOptionList(catalogs.runwareVideoExtendModels);
   const runwareVideoUpscaleOptions = falModelOptionList(catalogs.runwareVideoUpscaleModels);
   const runwareVideoRestyleOptions = falModelOptionList(catalogs.runwareVideoRestyleModels);
+  const runwareVideoCharacterOptions = falModelOptionList(catalogs.runwareVideoCharacterModels);
   const runwareSpeechOptions = falModelOptionList(catalogs.runwareSpeechModels);
   const runwareTranscribeOptions = falModelOptionList(catalogs.runwareTranscribeModels);
   const runwareSoundEffectOptions = falModelOptionList(catalogs.runwareSoundEffectModels);
@@ -1574,21 +1581,50 @@ function ModelSelectionPanel({
           <div className="two-column">
             <div className="field">
               <div className="field-label-row">
-                {fieldLabel('fal-video-character-model', 'Character-Replacement Model (fal.ai)', 'videoCharacterModel')}
+                {fieldLabel('character-provider', 'Character Replacement Provider', 'characterProvider')}
                 <InfoHint
                   label="Character replacement"
-                  text="Keeps an attached VIDEO — its setting, camera, motion, and performance — and swaps the person in it for the character in attached reference images (the replace_character tool's endpoint). The opposite of motion control, which keeps the image's scene and borrows only the video's movement. Runs on fal.ai whatever the Video Provider is. Recast replaces up to four people, one photo each; the Kling edit models take a character sheet (a front view plus up to three angles); Wan Animate Replace takes one image and no prompt. Source clips are capped by the model (3–10s on Kling o1, 5–30s on Recast). Motion control is different: it keeps the image's scene and borrows the clip's motion."
+                  text="Keeps an attached VIDEO — its setting, camera, motion, and performance — and swaps the person in it for the character in attached reference images (the replace_character tool). The opposite of motion control, which keeps the image's scene and borrows only the video's movement. Its own provider, independent of the Video Provider: fal.ai offers Recast (up to four people, one photo each, 5–30s clips), the Kling edit models (a character sheet — a front view plus up to three angles, 3–10s on o1), and Wan Animate Replace (one image, no prompt); Runware offers Pruna's P-Video replace models (2-Pro: up to two people, one photo each, clips up to 2 minutes; the original: one character from up to three images)."
                 />
               </div>
-              <ModelCombobox
-                id="fal-video-character-model"
-                ariaLabel="fal.ai character-replacement model"
-                placeholder={defaultFalVideoCharacterModel}
-                value={value.falVideoCharacterModel}
-                onChange={(next) => onChange({falVideoCharacterModel: next})}
-                options={falVideoCharacterOptions}
-                allowCustom
-              />
+              <select
+                id="character-provider"
+                value={value.characterProvider}
+                onChange={(event) => onChange({characterProvider: event.target.value as 'fal' | 'runware'})}
+              >
+                <option value="fal">fal.ai</option>
+                <option value="runware">Runware</option>
+              </select>
+            </div>
+
+            <div className="field">
+              {value.characterProvider === 'runware' ? (
+                <>
+                  {fieldLabel('runware-video-character-model', 'Character-Replacement Model (Runware)', 'videoCharacterModel')}
+                  <ModelCombobox
+                    id="runware-video-character-model"
+                    ariaLabel="Runware character-replacement model"
+                    placeholder={defaultRunwareVideoCharacterModel}
+                    value={value.runwareVideoCharacterModel}
+                    onChange={(next) => onChange({runwareVideoCharacterModel: next})}
+                    options={runwareVideoCharacterOptions}
+                    allowCustom
+                  />
+                </>
+              ) : (
+                <>
+                  {fieldLabel('fal-video-character-model', 'Character-Replacement Model (fal.ai)', 'videoCharacterModel')}
+                  <ModelCombobox
+                    id="fal-video-character-model"
+                    ariaLabel="fal.ai character-replacement model"
+                    placeholder={defaultFalVideoCharacterModel}
+                    value={value.falVideoCharacterModel}
+                    onChange={(next) => onChange({falVideoCharacterModel: next})}
+                    options={falVideoCharacterOptions}
+                    allowCustom
+                  />
+                </>
+              )}
             </div>
           </div>
         </div>

@@ -89,6 +89,12 @@ const (
 	defaultRunwareVideoExtendModel  = "google:3@2"
 	defaultRunwareVideoUpscaleModel = "bfl:flux@video-upscale"
 	defaultRunwareVideoRestyleModel = "bfl:flux@video-edit-fast"
+	// defaultRunwareVideoCharacterModel is replace_character's model when
+	// runware is the CharacterProvider — Pruna's P-Video-2-Pro-Replace puts
+	// the people from one or two photos into an existing clip (one image per
+	// person, left to right), keeping its camera, background, timing, motion,
+	// and soundtrack; sources run 1s to 2 minutes, outputs 480p to 4K.
+	defaultRunwareVideoCharacterModel = "prunaai:p-video@2-pro-replace"
 	// defaultRunwareImageUpscaleModel is Real-ESRGAN: the same ESRGAN family
 	// fal's default upscaler (fal-ai/esrgan) and Replicate's
 	// (nightmareai/real-esrgan) speak, so the house default travels with the

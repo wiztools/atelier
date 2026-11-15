@@ -385,6 +385,7 @@ export namespace main {
 	    transcriptionProvider?: string;
 	    inpaintProvider?: string;
 	    lipsyncProvider?: string;
+	    characterProvider?: string;
 	    speechProvider?: string;
 	    audioProvider?: string;
 	
@@ -401,6 +402,7 @@ export namespace main {
 	        this.transcriptionProvider = source["transcriptionProvider"];
 	        this.inpaintProvider = source["inpaintProvider"];
 	        this.lipsyncProvider = source["lipsyncProvider"];
+	        this.characterProvider = source["characterProvider"];
 	        this.speechProvider = source["speechProvider"];
 	        this.audioProvider = source["audioProvider"];
 	    }
@@ -538,6 +540,7 @@ export namespace main {
 	    videoExtendModel?: string;
 	    videoUpscaleModel?: string;
 	    videoRestyleModel?: string;
+	    videoCharacterModel?: string;
 	    lipsyncImageModel?: string;
 	    lipsyncVideoModel?: string;
 	    speechModel?: string;
@@ -561,6 +564,7 @@ export namespace main {
 	        this.videoExtendModel = source["videoExtendModel"];
 	        this.videoUpscaleModel = source["videoUpscaleModel"];
 	        this.videoRestyleModel = source["videoRestyleModel"];
+	        this.videoCharacterModel = source["videoCharacterModel"];
 	        this.lipsyncImageModel = source["lipsyncImageModel"];
 	        this.lipsyncVideoModel = source["lipsyncVideoModel"];
 	        this.speechModel = source["speechModel"];
@@ -1060,6 +1064,7 @@ export namespace main {
 	    videoUpscaleModel?: string;
 	    videoReframeModel?: string;
 	    videoRestyleModel?: string;
+	    characterProvider?: string;
 	    videoCharacterModel?: string;
 	    speechProvider?: string;
 	    audioModel?: string;
@@ -1111,6 +1116,7 @@ export namespace main {
 	        this.videoUpscaleModel = source["videoUpscaleModel"];
 	        this.videoReframeModel = source["videoReframeModel"];
 	        this.videoRestyleModel = source["videoRestyleModel"];
+	        this.characterProvider = source["characterProvider"];
 	        this.videoCharacterModel = source["videoCharacterModel"];
 	        this.speechProvider = source["speechProvider"];
 	        this.audioModel = source["audioModel"];

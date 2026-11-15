@@ -76,7 +76,7 @@ const full = asConfig({
       model: 'civitai:4201@130072', imageEditModel: 'runware:9@7', upscaleModel: 'runware:9@6',
       videoModel: 'klingai:kling-video@9.9', videoImageModel: 'klingai:kling-video@9.8',
       videoExtendModel: 'google:3@1', videoUpscaleModel: 'bfl:flux@video-upscale-9',
-      videoRestyleModel: 'bfl:flux@video-edit-9', inpaintModel: 'bfl:9@9',
+      videoRestyleModel: 'bfl:flux@video-edit-9', videoCharacterModel: 'prunaai:p-video@9-replace', inpaintModel: 'bfl:9@9',
       lipsyncImageModel: 'veed:fabric@9', lipsyncVideoModel: 'klingai:9@9',
       speechModel: 'minimax:speech@9.9', transcribeModel: 'google:gemini@9.9',
       soundEffectsModel: 'mirelo:9@9',
@@ -92,7 +92,7 @@ const full = asConfig({
   },
   models: {
     primaryProvider: 'openrouter', harnessProvider: 'openai-compatible', imageProvider: 'replicate', videoProvider: 'replicate',
-    inpaintProvider: 'replicate', lipsyncProvider: 'replicate', speechProvider: 'ollama', audioProvider: 'replicate',
+    inpaintProvider: 'replicate', lipsyncProvider: 'replicate', characterProvider: 'runware', speechProvider: 'ollama', audioProvider: 'replicate',
     transcriptionProvider: 'local-whisper',
   },
   prompts: {system: 'Be terse.'},
