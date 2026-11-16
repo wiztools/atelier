@@ -109,6 +109,10 @@ export function EditorSlot({app}: {app: AppModel}) {
                 }}
                 onDirtyChange={(dirty) => {app.subtitleEditorDirty.current = dirty;}}
                 onSavedToConversation={() => app.refreshAfterConversationWrite(subtitleEditorHandle.source.conversationId)}
+                onPreview={(asset) => {
+                  if (asset.kind === 'image') {app.setPreviewImage(asset.url ?? '');}
+                  else {app.setPreviewMedia(asset.url ?? '', asset.kind === 'audio' ? 'audio' : 'video');}
+                }}
               />
             </div>
           ) : markdownEditorHandle ? (
@@ -154,6 +158,12 @@ export function EditorSlot({app}: {app: AppModel}) {
                 onDirtyChange={(dirty) => {app.compositionEditorDirty.current = dirty;}}
                 onSavedToConversation={(conversationID) => app.refreshAfterConversationWrite(conversationID)}
                 onConversationCreated={(conversationID) => {void app.adoptEditorConversation(conversationID, compositionEditorHandle.draft);}}
+                // The picker's Preview buttons route by kind: images into the
+                // existing image lightbox, video/audio into its media variant.
+                onPreview={(asset) => {
+                  if (asset.kind === 'image') {app.setPreviewImage(asset.url ?? '');}
+                  else {app.setPreviewMedia(asset.url ?? '', asset.kind === 'audio' ? 'audio' : 'video');}
+                }}
               />
             </div>
           ) : comicEditorHandle ? (
@@ -175,8 +185,12 @@ export function EditorSlot({app}: {app: AppModel}) {
                   });
                 }}
                 onDirtyChange={(dirty) => {app.comicEditorDirty.current = dirty;}}
-                onSavedToConversation={(conversationID) => app.refreshAfterConversationWrite(conversationID)}
+                onSavedToConversation={() => app.refreshAfterConversationWrite(comicEditorHandle.source.conversationId)}
                 onConversationCreated={(conversationID) => {void app.adoptEditorConversation(conversationID, comicEditorHandle.draft);}}
+                onPreview={(asset) => {
+                  if (asset.kind === 'image') {app.setPreviewImage(asset.url ?? '');}
+                  else {app.setPreviewMedia(asset.url ?? '', asset.kind === 'audio' ? 'audio' : 'video');}
+                }}
               />
             </div>
           ) : app.documentCompareHandle ? (

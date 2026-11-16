@@ -88,10 +88,13 @@ assert(formatSubtitleClock(-3, 'srt') === '00:00:00,000', 'negative times clamp 
 
 // Linked-media provenance: the edited conversation's own assets never read as
 // foreign media, even when its title is blank; a cross-conversation row (the
-// library fold) names its chat.
+// library fold) names its chat, led by its project when it has one.
 assert(linkedMediaProvenance({conversationId: 'conv_a'}, 'conv_a') === 'this chat', 'own asset reads this chat');
 assert(linkedMediaProvenance({conversationId: 'conv_a', conversationTitle: ''}, 'conv_a') === 'this chat', 'untitled own asset still reads this chat');
 assert(linkedMediaProvenance({conversationId: 'conv_b', conversationTitle: 'Studio session'}, 'conv_a') === 'Studio session', 'cross-conversation asset names its chat');
 assert(linkedMediaProvenance({conversationId: 'conv_b'}, 'conv_a') === 'another chat', 'untitled cross-conversation asset falls back to another chat');
+assert(linkedMediaProvenance({conversationId: 'conv_b', conversationTitle: 'Studio session', projectName: 'Ad shoot'}, 'conv_a') === 'Ad shoot · Studio session', 'cross-conversation asset leads with its project');
+assert(linkedMediaProvenance({conversationId: 'conv_b', projectName: 'Ad shoot'}, 'conv_a') === 'Ad shoot · another chat', 'project rides even over the untitled fallback');
+assert(linkedMediaProvenance({conversationId: 'conv_a', projectName: 'Ad shoot'}, 'conv_a') === 'this chat', 'own asset ignores its project');
 
 console.log('subtitle model assertions passed');

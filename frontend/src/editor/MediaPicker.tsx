@@ -45,6 +45,10 @@ export function MediaPicker(props: {
   // What the ref count names — the composer's "in composition ×2" becomes
   // the comic's "in comic ×2" when the caller passes a noun.
   refNoun?: string;
+  // Per-row Preview affordance: opens the asset in the app's media preview
+  // dialog without leaving the picker. Omitted by callers that preview
+  // elsewhere (none today — every editor routes to AppOverlays via EditorSlot).
+  onPreview?: (asset: MediaPickerAsset) => void;
   onAdd: (asset: MediaPickerAsset) => void;
   onClose: () => void;
 }) {
@@ -56,7 +60,7 @@ export function MediaPicker(props: {
     const seen = new Set<string>();
     return props.assets
       .filter((asset) => (kinds as readonly string[]).includes(asset.kind) && asset.url && !seen.has(asset.id) && seen.add(asset.id))
-      .filter((asset) => !needle || (asset.conversationTitle || '').toLowerCase().includes(needle) || asset.id.toLowerCase().includes(needle))
+      .filter((asset) => !needle || (asset.conversationTitle || '').toLowerCase().includes(needle) || (asset.projectName || '').toLowerCase().includes(needle) || asset.id.toLowerCase().includes(needle))
       .sort((a, b) => ((a.createdAt ?? '') === (b.createdAt ?? '') ? (a.id < b.id ? 1 : -1) : (a.createdAt ?? '') < (b.createdAt ?? '') ? 1 : -1));
   }, [props.assets, query, kinds]);
 
@@ -92,6 +96,24 @@ export function MediaPicker(props: {
                 </span>
                 <span className="composition-picker-state">{busy ? 'measuring…' : count > 0 ? `in ${props.refNoun ?? 'composition'} ×${count} · add again` : '+ add'}</span>
               </button>
+              {/* Sibling of the row button, never nested in it — a button
+                  cannot contain a button (the assets-panel rule). The li is
+                  the grid; the picker stays open so a preview feeds the next
+                  pick. */}
+              {props.onPreview ? (
+                <button
+                  type="button"
+                  className="composition-picker-preview"
+                  title={`Preview this ${asset.kind}`}
+                  aria-label={`Preview ${asset.id.slice(0, 16)}`}
+                  onClick={() => props.onPreview?.(asset)}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                </button>
+              ) : null}
             </li>
           );
         })}

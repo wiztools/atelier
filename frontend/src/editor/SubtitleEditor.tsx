@@ -89,6 +89,10 @@ export function SubtitleEditor(props: {
   // parent can refresh the sidebar and the assets panel (the audio editor's
   // onResultAdded counterpart).
   onSavedToConversation?: () => void;
+  // The linked-media picker's per-row Preview: routes the asset into the
+  // app-level preview dialog (EditorSlot wires the kind split) without
+  // leaving the picker.
+  onPreview?: (asset: main.ConversationAsset) => void;
 }) {
   const {source} = props.handle;
   // The revision the editor is currently working from: the imported artifact
@@ -422,7 +426,7 @@ export function SubtitleEditor(props: {
     const seen = new Set<string>();
     return mediaList
       .filter((asset) => (asset.kind === 'video' || asset.kind === 'audio') && asset.url && !seen.has(asset.id) && seen.add(asset.id))
-      .filter((asset) => !query || (asset.conversationTitle || '').toLowerCase().includes(query) || asset.id.toLowerCase().includes(query))
+      .filter((asset) => !query || (asset.conversationTitle || '').toLowerCase().includes(query) || (asset.projectName || '').toLowerCase().includes(query) || asset.id.toLowerCase().includes(query))
       .sort((a, b) => ((a.createdAt ?? '') === (b.createdAt ?? '') ? (a.id < b.id ? 1 : -1) : (a.createdAt ?? '') < (b.createdAt ?? '') ? 1 : -1));
   }, [mediaList, pickerQuery]);
 
@@ -520,6 +524,23 @@ export function SubtitleEditor(props: {
                           {asset.role === 'user' ? 'attached' : 'generated'} · {linkedMediaProvenance(asset, sourceConversationID)}
                         </span>
                       </button>
+                      {/* Sibling of the row button, never nested in it — a
+                          button cannot contain a button (the assets-panel
+                          rule); the picker stays open underneath. */}
+                      {props.onPreview ? (
+                        <button
+                          type="button"
+                          className="subtitle-picker-preview"
+                          title={`Preview this ${asset.kind}`}
+                          aria-label={`Preview ${asset.id.slice(0, 16)}`}
+                          onClick={() => props.onPreview?.(asset)}
+                        >
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                            <circle cx="12" cy="12" r="3" />
+                          </svg>
+                        </button>
+                      ) : null}
                     </li>
                   ))}
                   {pickerCandidates.length === 0 ? <li><span className="subtitle-picker-empty">No video or audio assets found.</span></li> : null}

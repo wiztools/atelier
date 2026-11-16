@@ -1,5 +1,7 @@
 import {MoveConversationDialog} from '../dialogs/MoveConversationDialog';
 import {ProjectNotesDialog} from '../dialogs/ProjectNotesDialog';
+import {AudioPlayer} from '../media/AudioPlayer';
+import {VideoPlayer} from '../media/VideoPlayer';
 import {AppModel} from '../app/useAppModel';
 
 // Values the JSX null-checks and then reads in a callback stay const locals:
@@ -7,6 +9,7 @@ import {AppModel} from '../app/useAppModel';
 export function AppOverlays({app}: {app: AppModel}) {
   const {
     previewEditContext,
+    previewMedia,
     moveDialogConversation,
   } = app;
   return (
@@ -24,46 +27,56 @@ export function AppOverlays({app}: {app: AppModel}) {
             </div>
           </div>
         ) : null}
-        {app.previewImage ? (
-          <div className="image-preview-overlay" role="presentation" onClick={() => app.setPreviewImage('')}>
+        {app.previewImage || previewMedia ? (
+          <div className="image-preview-overlay" role="presentation" onClick={() => app.closePreviews()}>
             <div
-              className="image-preview-dialog"
+              className={previewMedia ? 'image-preview-dialog is-media' : 'image-preview-dialog'}
               role="dialog"
               aria-modal="true"
-              aria-label="Attached image preview"
+              aria-label={previewMedia ? 'Media preview' : 'Attached image preview'}
               onClick={(event) => event.stopPropagation()}
             >
-              <button className="image-preview-close" type="button" aria-label="Close image preview" onClick={() => app.setPreviewImage('')}>
+              <button className="image-preview-close" type="button" aria-label={previewMedia ? 'Close media preview' : 'Close image preview'} onClick={() => app.closePreviews()}>
                 ×
               </button>
-              <button className="image-preview-download" type="button" aria-label="Download image" title="Download" onClick={() => app.saveGeneratedImage(app.previewImage, 0)}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M12 4v11" />
-                  <path d="m7 10 5 5 5-5" />
-                  <path d="M5 20h14" />
-                </svg>
-              </button>
-              {previewEditContext ? (
-                <button
-                  className="image-preview-edit"
-                  type="button"
-                  disabled={app.editorOpening}
-                  aria-label="Edit image with AI"
-                  title="Edit image with AI"
-                  onClick={() => {
-                    const context = previewEditContext;
-                    app.setPreviewImage('');
-                    app.setPreviewEditContext(null);
-                    void app.openImageEditor(context.conversationID, context.artifactID);
-                  }}
-                >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <path d="M12 20h9" />
-                    <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
-                  </svg>
-                </button>
-              ) : null}
-              <img src={app.previewImage} alt="Attached preview" />
+              {previewMedia ? (
+                previewMedia.kind === 'video' ? (
+                  <VideoPlayer src={previewMedia.url} />
+                ) : (
+                  <AudioPlayer src={previewMedia.url} />
+                )
+              ) : (
+                <>
+                  <button className="image-preview-download" type="button" aria-label="Download image" title="Download" onClick={() => app.saveGeneratedImage(app.previewImage, 0)}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M12 4v11" />
+                      <path d="m7 10 5 5 5-5" />
+                      <path d="M5 20h14" />
+                    </svg>
+                  </button>
+                  {previewEditContext ? (
+                    <button
+                      className="image-preview-edit"
+                      type="button"
+                      disabled={app.editorOpening}
+                      aria-label="Edit image with AI"
+                      title="Edit image with AI"
+                      onClick={() => {
+                        const context = previewEditContext;
+                        app.setPreviewImage('');
+                        app.setPreviewEditContext(null);
+                        void app.openImageEditor(context.conversationID, context.artifactID);
+                      }}
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M12 20h9" />
+                        <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                      </svg>
+                    </button>
+                  ) : null}
+                  <img src={app.previewImage} alt="Attached preview" />
+                </>
+              )}
             </div>
           </div>
         ) : null}

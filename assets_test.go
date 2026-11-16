@@ -197,3 +197,68 @@ func TestResolveReferencedAssetsSkipsMissingAndEmpty(t *testing.T) {
 		t.Fatal("unknown conversation must resolve nothing, not fail")
 	}
 }
+
+// The per-conversation listing stamps the owning project's name beside the
+// title — the pickers lead cross-chat rows with it — while a standalone
+// conversation keeps the field empty.
+func TestListConversationAssetsCarriesProjectName(t *testing.T) {
+	storage := libraryTestStorage(t)
+	libraryID := mustCreateLibrary(t, storage)
+	project, err := createProject(storage, libraryID, "Campaign")
+	if err != nil {
+		t.Fatalf("createProject returned error: %v", err)
+	}
+	writeSearchConversation(t, storage, "2026/08/conv_proj",
+		libraryConversationFixture("conv_proj", "Member", "2026-08-01T10:00:00Z", project.ID),
+		searchTurnFixture("turn_000001", "assistant", "2026-08-01T10:00:00Z",
+			HistoryContent{Type: "image", ArtifactID: "img_member", Path: "artifacts/img_member.png", MimeType: "image/png"},
+		),
+	)
+	writeAssetFile(t, storage, "2026/08/conv_proj", "artifacts/img_member.png", string(minimalPNG))
+	writeSearchConversation(t, storage, "2026/08/conv_loose",
+		searchConversationFixture("conv_loose", "Loose", "2026-08-02T10:00:00Z"),
+		searchTurnFixture("turn_000001", "assistant", "2026-08-02T10:00:00Z",
+			HistoryContent{Type: "image", ArtifactID: "img_loose", Path: "artifacts/img_loose.png", MimeType: "image/png"},
+		),
+	)
+	writeAssetFile(t, storage, "2026/08/conv_loose", "artifacts/img_loose.png", string(minimalPNG))
+
+	member, err := listConversationAssets(storage, "conv_proj")
+	if err != nil {
+		t.Fatalf("listConversationAssets(member): %v", err)
+	}
+	if len(member) != 1 || member[0].ProjectName != "Campaign" || member[0].ConversationTitle != "Member" {
+		t.Fatalf("member fold = %+v, want ProjectName Campaign", member)
+	}
+	loose, err := listConversationAssets(storage, "conv_loose")
+	if err != nil {
+		t.Fatalf("listConversationAssets(loose): %v", err)
+	}
+	if len(loose) != 1 || loose[0].ProjectName != "" {
+		t.Fatalf("standalone fold = %+v, want an empty ProjectName", loose)
+	}
+}
+
+// The stamp copies, never mutates: conversationAssetCache hands out its slice
+// directly, so an in-place write would poison cached folds with names that a
+// later project move would stale.
+func TestStampAssetProjectsCopiesWithoutMutatingInput(t *testing.T) {
+	input := []ConversationAsset{
+		{ID: "img_a", ConversationID: "conv_a"},
+		{ID: "vid_b", ConversationID: "conv_b"},
+	}
+	names := map[string]string{"conv_a": "Campaign"}
+	stamped := stampAssetProjects(input, names)
+	if stamped[0].ProjectName != "Campaign" || stamped[0].ID != "img_a" {
+		t.Fatalf("stamped[0] = %+v", stamped[0])
+	}
+	if stamped[1].ProjectName != "" {
+		t.Fatalf("unmapped entry stamped: %+v", stamped[1])
+	}
+	if input[0].ProjectName != "" {
+		t.Fatalf("input mutated: %+v", input[0])
+	}
+	if other := stampAssetProjects(input, nil); len(other) != 2 || other[0].ProjectName != "" {
+		t.Fatalf("empty names map must return the assets unstamped: %+v", other)
+	}
+}

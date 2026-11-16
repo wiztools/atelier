@@ -586,6 +586,11 @@ func TestListLibraryAssetsFoldsMembershipAndOrder(t *testing.T) {
 	if assets[0].ConversationTitle != "Generated" || assets[1].ConversationTitle != "Uploads" {
 		t.Fatalf("conversation titles = [%q, %q]", assets[0].ConversationTitle, assets[1].ConversationTitle)
 	}
+	// Each asset names its own conversation's project — the picker leads
+	// cross-chat rows with it so sibling projects are tellable apart.
+	if assets[0].ProjectName != "B" || assets[1].ProjectName != "A" {
+		t.Fatalf("project names = [%q, %q], want [B, A]", assets[0].ProjectName, assets[1].ProjectName)
+	}
 	if !strings.HasPrefix(assets[0].URL, "/atelier-artifact/") {
 		t.Fatalf("URL = %q, want hydrated", assets[0].URL)
 	}
@@ -634,6 +639,46 @@ func TestListLibraryAssetsRefoldsOnChange(t *testing.T) {
 	}
 	if len(second) != 2 {
 		t.Fatalf("refold = %+v, want the new artifact (cache must key on UpdatedAt)", second)
+	}
+}
+
+// A project move (the one sanctioned ProjectID rewrite) must be visible on the
+// very next listing — the names stamp post-fold, outside conversationAssetCache.
+func TestListLibraryAssetsStampsFreshNamesAfterMove(t *testing.T) {
+	storage := libraryTestStorage(t)
+	libraryID := mustCreateLibrary(t, storage)
+	projectA, err := createProject(storage, libraryID, "Before")
+	if err != nil {
+		t.Fatalf("createProject returned error: %v", err)
+	}
+	projectB, err := createProject(storage, libraryID, "After")
+	if err != nil {
+		t.Fatalf("createProject returned error: %v", err)
+	}
+	writeSearchConversation(t, storage, "2026/08/conv_moved",
+		libraryConversationFixture("conv_moved", "Moved", "2026-08-01T10:00:00Z", projectA.ID),
+		searchTurnFixture("turn_000001", "assistant", "2026-08-01T10:00:00Z",
+			HistoryContent{Type: "image", ArtifactID: "img_moved", Path: "artifacts/img_moved.png", MimeType: "image/png"},
+		),
+	)
+	writeAssetFile(t, storage, "2026/08/conv_moved", "artifacts/img_moved.png", string(minimalPNG))
+
+	before, err := listLibraryAssets(storage, libraryID)
+	if err != nil {
+		t.Fatalf("listLibraryAssets before move: %v", err)
+	}
+	if len(before) != 1 || before[0].ProjectName != "Before" {
+		t.Fatalf("before-move fold = %+v, want ProjectName Before", before)
+	}
+	if _, err := moveConversationToProject(storage, "conv_moved", projectB.ID); err != nil {
+		t.Fatalf("moveConversationToProject returned error: %v", err)
+	}
+	after, err := listLibraryAssets(storage, libraryID)
+	if err != nil {
+		t.Fatalf("listLibraryAssets after move: %v", err)
+	}
+	if len(after) != 1 || after[0].ProjectName != "After" {
+		t.Fatalf("after-move fold = %+v, want ProjectName After (the stamp must not ride the fold cache)", after)
 	}
 }
 

@@ -2000,6 +2000,7 @@ export namespace main {
 	    role: string;
 	    createdAt?: string;
 	    conversationTitle?: string;
+	    projectName?: string;
 	    name?: string;
 	    alias?: string;
 	
@@ -2020,6 +2021,7 @@ export namespace main {
 	        this.role = source["role"];
 	        this.createdAt = source["createdAt"];
 	        this.conversationTitle = source["conversationTitle"];
+	        this.projectName = source["projectName"];
 	        this.name = source["name"];
 	        this.alias = source["alias"];
 	    }

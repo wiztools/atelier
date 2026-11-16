@@ -402,6 +402,17 @@
   gap: 4px;
 }
 
+/* Each li is a two-column grid: the row button (Add) beside its compact
+   Preview sibling — siblings, never nested, because a button cannot contain
+   a button (the assets-panel rule). Rows whose caller passes no onPreview
+   render one child, which the grid absorbs into the 1fr track. */
+.composition-media-picker li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+  align-items: stretch;
+}
+
 .composition-media-picker li button {
   width: 100%;
   /* The global button rule pins height: 36px — one line. This row is two
@@ -421,6 +432,26 @@
   background: #23272a;
   color: #d7dde2;
   cursor: pointer;
+}
+
+/* The Preview override: the base li button rule above styles every button in
+   the list, so the compact sibling un-does the card shape — an icon-sized
+   ghost (the eye glyph) that stretches to the row's height. */
+.composition-media-picker li button.composition-picker-preview {
+  width: auto;
+  height: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  grid-template-columns: none;
+  gap: 0;
+  padding: 4px 8px;
+  color: #9aa3a9;
+  align-self: stretch;
+}
+
+.composition-media-picker li button.composition-picker-preview:hover:not(:disabled) {
+  color: #d7dde2;
 }
 
 .composition-media-picker li button:hover:not(:disabled) {

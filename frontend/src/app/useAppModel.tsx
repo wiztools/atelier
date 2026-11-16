@@ -340,7 +340,7 @@ export function useAppModel() {
   // the record is the truth. Dormant while an older conversation is open —
   // same posture as draftWorkspace.
   const [draftModelOverrides, setDraftModelOverrides] = useState<main.ConversationModelOverrides | null>(null);
-  const {openCapabilityID, previewImage, setOpenCapabilityID, setPreviewImage} = useOverlays();
+  const {openCapabilityID, previewImage, previewMedia, closePreviews, setOpenCapabilityID, setPreviewImage, setPreviewMedia} = useOverlays();
   const {
     checkForUpdates,
     dismissUpdate,
@@ -2420,10 +2420,16 @@ export function useAppModel() {
   // @-mention can cite any asset in the library.
   function mentionCandidates(): MentionCandidate[] {
     const source = composerLibraryID ? libraryAssets : panelAssets;
-    const provenance = (asset: main.ConversationAsset) =>
-      composerLibraryID
-        ? `${asset.role === 'user' ? 'attached' : 'generated'} · ${asset.conversationTitle || 'another chat'}`
-        : `${asset.role === 'user' ? 'attached' : 'generated'} · ${assetTurnLabel(asset.originTurnId)}`;
+    // Library-scope hints lead with the chat's project when it has one — the
+    // same "Project · chat title" the editor pickers' rows carry — so assets
+    // from sibling projects are tellable apart in the menu too.
+    const provenance = (asset: main.ConversationAsset) => {
+      const chat = composerLibraryID
+        ? asset.conversationTitle || 'another chat'
+        : assetTurnLabel(asset.originTurnId);
+      const labelled = asset.projectName ? `${asset.projectName} · ${chat}` : chat;
+      return `${asset.role === 'user' ? 'attached' : 'generated'} · ${labelled}`;
+    };
     const assets: MentionCandidate[] = source.map((asset) => ({
       // An aliased asset faces the menu under its alias — the name the user
       // gave it — and the id prefix stays resolvable through the binding pool
@@ -2817,8 +2823,11 @@ export function useAppModel() {
     convModelsDraft,
     convModelsKeys,
     setPreviewImage,
+    setPreviewMedia,
+    closePreviews,
     setOpenCapabilityID,
     previewImage,
+    previewMedia,
     openCapabilityID,
     updateError,
     updateBusy,

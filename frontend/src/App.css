@@ -2858,7 +2858,11 @@ button:disabled {
 .image-preview-overlay {
   position: fixed;
   inset: 0;
-  z-index: 20;
+  /* Above the editor pickers' dropdowns (z 30) and the @-mention list (z 40) —
+     the media pickers' Preview buttons open this dialog while the picker
+     stays open beneath it — below the hover tooltips (50) and the portaled
+     row menus (1000). */
+  z-index: 45;
   display: grid;
   place-items: center;
   padding: 28px;
@@ -2871,6 +2875,52 @@ button:disabled {
   max-height: calc(100vh - 56px);
   display: grid;
   place-items: center;
+}
+
+/* The media variant: video/audio from the editor pickers' Preview buttons.
+   Unlike the image (whose img element carries the card look), the dialog
+   itself sizes the players, which are width:100% grids. */
+.image-preview-dialog.is-media {
+  width: min(760px, calc(100vw - 56px));
+  border: 1px solid #44494d;
+  border-radius: 8px;
+  background: #0f1112;
+  padding: 14px;
+  box-sizing: border-box;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+}
+
+/* The video must fit the viewport like the image variant's img does: the
+   video's intrinsic size is what defines the stage (.video-stage is grid-
+   sized to its content on purpose), and no other rule constrains it here —
+   the chat and the assets panel each cap their own players. max-width +
+   max-height shrink the element along its aspect ratio (a portrait clip
+   becomes a tall narrow column, no letterbox bands); the poster overlay
+   (width:100% of the stage, object-fit: contain) tracks the same box. */
+.image-preview-dialog.is-media .video-stage video {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100vh - 120px);
+}
+
+/* A height-capped (portrait) clip resolves narrower than the card, and a
+   clamped grid item lands at the stage's left edge — while the poster
+   (width:100%, object-fit: contain) draws the same frame dead center — so
+   the thumbnail and the playback would sit at different x. Centering the
+   stage's items puts the video on the poster's center line. Landscape clips
+   are unaffected: the video already fills the stage. */
+.image-preview-dialog.is-media .video-stage {
+  justify-items: center;
+}
+
+/* The poster still's generic 520px cap would stop it covering a taller
+   video's box, so here it rides the same viewport bound as the video: the
+   pre-play thumbnail fills exactly the box the playback will occupy (contain
+   letterboxes when it doesn't), and the thumbnail-only branch (FLV/AVI/TS
+   render a poster with no video sibling to bound the stage) stays inside the
+   viewport too. */
+.image-preview-dialog.is-media .video-poster-still {
+  max-height: calc(100vh - 120px);
 }
 
 .image-preview-dialog img {

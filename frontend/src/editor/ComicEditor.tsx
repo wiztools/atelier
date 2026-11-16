@@ -198,6 +198,9 @@ export function ComicEditor(props: {
   // conversation: the parent adopts it (reveals the row, moves the new chat's
   // unsent text into it, makes it the active conversation).
   onConversationCreated?: (conversationID: string) => void;
+  // The media picker's per-row Preview: routes the asset into the app-level
+  // preview dialog (EditorSlot wires the kind split) without leaving the picker.
+  onPreview?: (asset: main.ConversationAsset) => void;
 }) {
   const {source} = props.handle;
   // The host conversation. A detached draft starts with none and adopts the
@@ -1406,6 +1409,7 @@ export function ComicEditor(props: {
               emptyText="No images found — attach or generate art in the conversation first (HEIC/AVIF sources need convert_image first)."
               refNoun="comic"
               onAdd={(asset) => void addMedia(asset)}
+              onPreview={props.onPreview}
               onClose={() => setPickerOpen(false)}
             />
           ) : null}

@@ -48,6 +48,13 @@ type ConversationAsset struct {
 	// panel needs it to say which chat each asset came from; per conversation
 	// it is constant but harmless.
 	ConversationTitle string `json:"conversationTitle,omitempty"`
+	// ProjectName is the owning conversation's library project's name — display
+	// provenance beside ConversationTitle: the editor pickers lead cross-chat
+	// rows with it ("My Project · chat title") so media from sibling projects
+	// is identifiable in a library fold. Filled post-fold by both listings
+	// (stampAssetProjects); empty for standalone conversations and for uploads
+	// whose source chat is no longer a library member.
+	ProjectName string `json:"projectName,omitempty"`
 	// Name is the uploaded file's original filename — uploads only (see
 	// library_assets.go); derived assets keep it empty, their filenames never
 	// persisted anywhere.
@@ -67,7 +74,16 @@ func listConversationAssets(storage ConfigStorage, conversationID string) ([]Con
 	if err != nil {
 		return nil, err
 	}
-	return stampAssetAliases(storage, conversationAssetsFromDetail(detail)), nil
+	assets := stampAssetAliases(storage, conversationAssetsFromDetail(detail))
+	// The project name rides like the title: a project conversation's assets
+	// carry it so pickers can lead cross-chat rows with it. Fail-soft — a
+	// project that fails to resolve costs the name, never the listing.
+	if projectID := detail.Conversation.ProjectID; projectID != "" {
+		if project, _, findErr := findProject(storage, projectID); findErr == nil {
+			assets = stampAssetProjects(assets, map[string]string{detail.Conversation.ID: project.Name})
+		}
+	}
+	return assets, nil
 }
 
 // conversationAssetsFromDetail folds a conversation's (sorted) turns into
@@ -359,6 +375,18 @@ func listLibraryAssets(storage ConfigStorage, libraryID string) ([]ConversationA
 	if err != nil {
 		return nil, err
 	}
+	// Project names for the rows' provenance ("My Project · chat title"): the
+	// members' records carry only the project ID, so the names come off the
+	// library's own project records — the same walk libraryProjectIDs just
+	// did, read a second time for the one field the ID set drops.
+	projects, err := listProjectRecords(storage, libraryID)
+	if err != nil {
+		return nil, err
+	}
+	projectNames := make(map[string]string, len(projects))
+	for _, project := range projects {
+		projectNames[project.ID] = project.Name
+	}
 	type libraryMember struct {
 		path         string
 		conversation HistoryConversation
@@ -417,7 +445,40 @@ func listLibraryAssets(storage ConfigStorage, libraryID string) ([]ConversationA
 		}
 		return assets[i].ID < assets[j].ID
 	})
+	// Every member carries a ProjectID (membership IS the project), so the
+	// conversation→name map covers the whole fold; uploads ride along through
+	// their source conversation's membership-gated ConversationID — a source
+	// chat that left the library keeps its title snapshot but loses the name,
+	// the same split as its jump link.
+	chatProjects := make(map[string]string, len(members))
+	for _, member := range members {
+		if name, ok := projectNames[member.conversation.ProjectID]; ok {
+			chatProjects[member.conversation.ID] = name
+		}
+	}
+	assets = stampAssetProjects(assets, chatProjects)
 	return stampAssetAliases(storage, assets), nil
+}
+
+// stampAssetProjects copies assets with each conversation's project name
+// filled in. names maps conversation id → project name; entries without a
+// mapping (standalone chats, uploads whose source chat left the library)
+// keep the field empty. It runs AFTER the listing folds and outside
+// conversationAssetCache on purpose — the stampAssetAliases pattern: cached
+// folds must stay project-free so a project move (MoveConversationToProject)
+// reads fresh names on the very next listing.
+func stampAssetProjects(assets []ConversationAsset, names map[string]string) []ConversationAsset {
+	if len(assets) == 0 || len(names) == 0 {
+		return assets
+	}
+	stamped := make([]ConversationAsset, len(assets))
+	for i, asset := range assets {
+		if name, ok := names[asset.ConversationID]; ok {
+			asset.ProjectName = name
+		}
+		stamped[i] = asset
+	}
+	return stamped
 }
 
 // cachedConversationAssets returns a conversation's asset fold through the

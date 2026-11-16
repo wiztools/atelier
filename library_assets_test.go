@@ -267,6 +267,9 @@ func TestListLibraryAssetsIncludesUploads(t *testing.T) {
 	if uploaded.ID != upload.ID || uploaded.Name != "uploaded.png" || uploaded.ConversationID != "conv_aaa" || uploaded.ConversationTitle != "Chat" {
 		t.Fatalf("folded upload = %+v", uploaded)
 	}
+	if uploaded.ProjectName != "Project" {
+		t.Fatalf("folded upload ProjectName = %q, want the source chat's project", uploaded.ProjectName)
+	}
 	if uploaded.OriginTurnID != "" {
 		t.Fatalf("folded upload carries origin turn %q", uploaded.OriginTurnID)
 	}
@@ -292,6 +295,9 @@ func TestListLibraryAssetsIncludesUploads(t *testing.T) {
 	}
 	if uploaded.ConversationID != "" || uploaded.ConversationTitle != "Chat" {
 		t.Fatalf("folded upload after source delete = %+v", uploaded)
+	}
+	if uploaded.ProjectName != "" {
+		t.Fatalf("folded upload after source delete keeps ProjectName %q — the name is member-gated like the link, unlike the title snapshot", uploaded.ProjectName)
 	}
 }
 

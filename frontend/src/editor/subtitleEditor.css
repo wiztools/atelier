@@ -109,6 +109,17 @@
   gap: 4px;
 }
 
+/* Asset rows are a two-column li: the row button (pick as playback source)
+   beside its compact Preview sibling — siblings, never nested, because a
+   button cannot contain a button (the assets-panel rule). The None row and
+   the empty notice render one child and fill the 1fr track alone. */
+.subtitle-media-picker li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+  align-items: stretch;
+}
+
 .subtitle-media-picker button {
   width: 100%;
   text-align: left;
@@ -118,6 +129,22 @@
 
 .subtitle-media-picker button.selected {
   border-color: #7a9c6c;
+}
+
+.subtitle-media-picker button.subtitle-picker-preview {
+  width: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 0;
+  padding: 4px 8px;
+  color: #9aa3a9;
+  align-self: stretch;
+}
+
+.subtitle-media-picker button.subtitle-picker-preview:hover:not(:disabled) {
+  color: #d7d1c3;
 }
 
 .subtitle-picker-name {

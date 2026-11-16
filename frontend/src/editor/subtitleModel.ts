@@ -238,16 +238,20 @@ export function formatSubtitleClock(seconds: number, format: SubtitleFormat): st
 export type LinkableMediaAsset = {
   conversationId: string;
   conversationTitle?: string;
+  projectName?: string;
 };
 
 // linkedMediaProvenance names one picker row's source chat. The edited
 // conversation's own assets read "this chat" even when its title is blank —
 // an untitled conversation must not look like foreign media; a different
-// conversation's asset (the library fold) names that conversation, with
-// "another chat" reserved for cross-conversation rows whose title is unknown.
+// conversation's asset (the library fold) names that conversation, led by its
+// project when it has one — a library fold mixes sibling projects, and the
+// project name is what tells their chats apart — with "another chat" reserved
+// for cross-conversation rows whose title is unknown.
 export function linkedMediaProvenance(asset: LinkableMediaAsset, editedConversationID: string): string {
   if (asset.conversationId === editedConversationID) {
     return 'this chat';
   }
-  return asset.conversationTitle || 'another chat';
+  const chat = asset.conversationTitle || 'another chat';
+  return asset.projectName ? `${asset.projectName} · ${chat}` : chat;
 }
