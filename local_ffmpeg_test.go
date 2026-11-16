@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -3612,6 +3613,13 @@ func TestNormalizeXFadeTransition(t *testing.T) {
 		{" CrossFade ", "fade", true},
 		{"DISSOLVE", "dissolve", true},
 		{"wipeleft", "wipeleft", true},
+		{"iris", "circleclose", true},
+		{"IRIS-Out", "circleclose", true},
+		{"iris_out", "circleclose", true},
+		{"iris-in", "circleopen", true},
+		{"iris in", "circleopen", true},
+		{"irisin", "circleopen", true},
+		{"iriswipe", "", false},
 		{"zoomin", "", false},
 		{"", "", false},
 	}
@@ -3619,6 +3627,11 @@ func TestNormalizeXFadeTransition(t *testing.T) {
 		got, ok := normalizeXFadeTransition(tc.name)
 		if got != tc.want || ok != tc.ok {
 			t.Errorf("normalizeXFadeTransition(%q) = (%q, %v), want (%q, %v)", tc.name, got, ok, tc.want, tc.ok)
+		}
+	}
+	for _, want := range []string{"iris", "iris-in"} {
+		if !slices.Contains(xfadeTransitionsEnum(), want) {
+			t.Errorf("xfadeTransitionsEnum() should expose %q — grammar-constrained planners can only emit enum members", want)
 		}
 	}
 }

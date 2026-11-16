@@ -525,19 +525,37 @@ var xfadeTransitions = []string{
 }
 
 // normalizeXFadeTransition trims a planner-supplied transition name and maps
-// the "crossfade" alias onto "fade". ok is false for anything outside the
-// curated enum — the Validate hook turns that into a planner correction, and
-// the executor refuses (a direct API path bypasses Validate) rather than
-// encoding an unknown ffmpeg option value.
+// the "crossfade" alias onto "fade" plus the film-word iris aliases onto
+// xfade's circle transitions. ok is false for anything outside the curated
+// enum — the Validate hook turns that into a planner correction, and the
+// executor refuses (a direct API path bypasses Validate) rather than encoding
+// an unknown ffmpeg option value.
 func normalizeXFadeTransition(name string) (string, bool) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	if name == "crossfade" {
 		return "fade", true
 	}
+	if alias, ok := xfadeTransitionIrisAlias(name); ok {
+		return alias, true
+	}
 	for _, known := range xfadeTransitions {
 		if name == known {
 			return name, true
 		}
+	}
+	return "", false
+}
+
+// xfadeTransitionIrisAlias maps the film word "iris" onto the circle
+// transitions in its common spellings: bare "iris" and "iris-out" mean the
+// closing circle (the classic iris-out — circleclose), "iris-in" the opening
+// one (circleopen).
+func xfadeTransitionIrisAlias(name string) (string, bool) {
+	switch strings.NewReplacer("-", "", "_", "", " ", "").Replace(name) {
+	case "iris", "irisout":
+		return "circleclose", true
+	case "irisin":
+		return "circleopen", true
 	}
 	return "", false
 }
@@ -2584,7 +2602,7 @@ func joinVideosToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "join_videos",
 		Title:       "Join videos",
-		Description: "Use this when the user asks to combine, concatenate, merge, stitch, or join multiple video clips into one (for audio files, use join_audios instead). Requires at least two videos attached or @-mentioned this turn — the clips are joined in EXACTLY the order they were attached or mentioned; that order is the sequence, so tell the user to reorder the attachments if they want a different one (older conversation clips are not picked up automatically). mode \"auto\" (the default) copies the streams untouched when every clip matches in codec, resolution, frame rate, and audio (fast, lossless — clips from the same generator always match) and re-encodes otherwise; \"copy\" forces stream copy; \"reencode\" forces re-encoding. transition (optional) blends the clips through that effect at every junction instead of hard-cutting: crossfade/dissolve/fadeblack, wipes, slides, circles, pixelize and more — run list_video_transitions to see what the installed ffmpeg supports (\"crossfade\" aliases \"fade\"). A transition always re-encodes (mode \"copy\" is rejected), applies to EVERY junction, and transitionDuration (optional, seconds, 0.1–10, default 1) sets its length — the joined video is the clips' combined length minus one overlap per junction; differing clips are scaled to the first clip's frame (letterboxed, never cropped), and clips without audio get silence so the crossfade stays in sync; the audio crossfade is equal-power, so loudness holds steady through the blend. The joined video is attached to the assistant reply and becomes the conversation's newest video.",
+		Description: "Use this when the user asks to combine, concatenate, merge, stitch, or join multiple video clips into one (for audio files, use join_audios instead). Requires at least two videos attached or @-mentioned this turn — the clips are joined in EXACTLY the order they were attached or mentioned; that order is the sequence, so tell the user to reorder the attachments if they want a different one (older conversation clips are not picked up automatically). mode \"auto\" (the default) copies the streams untouched when every clip matches in codec, resolution, frame rate, and audio (fast, lossless — clips from the same generator always match) and re-encodes otherwise; \"copy\" forces stream copy; \"reencode\" forces re-encoding. transition (optional) blends the clips through that effect at every junction instead of hard-cutting: crossfade/dissolve/fadeblack, wipes, slides, circles, pixelize and more — run list_video_transitions to see what the installed ffmpeg supports (\"crossfade\" aliases \"fade\"; the film word \"iris\" aliases \"circleclose\" — the classic iris-out — and \"iris-in\" aliases \"circleopen\"). A transition always re-encodes (mode \"copy\" is rejected), applies to EVERY junction, and transitionDuration (optional, seconds, 0.1–10, default 1) sets its length — the joined video is the clips' combined length minus one overlap per junction; differing clips are scaled to the first clip's frame (letterboxed, never cropped), and clips without audio get silence so the crossfade stays in sync; the audio crossfade is equal-power, so loudness holds steady through the blend. The joined video is attached to the assistant reply and becomes the conversation's newest video.",
 		Example:     `{"name":"join_videos"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: joinVideosParamSchema(),
@@ -4473,7 +4491,7 @@ func joinVideosParamSchema() map[string]any {
 		"additionalProperties": false,
 		"properties": map[string]any{
 			"mode":               enumParam("Optional — \"auto\" (the default) copies when every clip matches and re-encodes otherwise; \"copy\" forces a lossless stream copy; \"reencode\" forces re-encoding. A transition always re-encodes, so \"copy\" is invalid with one.", "auto", "copy", "reencode"),
-			"transition":         enumParam("Optional — blend the clips through this transition at every junction instead of hard-cutting (\"crossfade\" is an alias for \"fade\"). Re-encodes the join. Run list_video_transitions to see what the installed ffmpeg supports.", xfadeTransitionsEnum()...),
+			"transition":         enumParam("Optional — blend the clips through this transition at every junction instead of hard-cutting (\"crossfade\" is an alias for \"fade\"; \"iris\" for \"circleclose\" — the classic iris-out — and \"iris-in\" for \"circleopen\"). Re-encodes the join. Run list_video_transitions to see what the installed ffmpeg supports.", xfadeTransitionsEnum()...),
 			"transitionDuration": numberParam("Optional — the transition's length in seconds, 0.1 to 10. Omit for 1 second. Ignored without transition."),
 		},
 		"required": []string{},
@@ -4481,9 +4499,10 @@ func joinVideosParamSchema() map[string]any {
 }
 
 // xfadeTransitionsEnum is the planner-facing transition vocabulary: the
-// curated xfade list with the "crossfade" alias spelled out up front.
+// curated xfade list with the "crossfade" alias and the iris words spelled
+// out up front (the grammar-constrained planner can only emit enum members).
 func xfadeTransitionsEnum() []string {
-	return append([]string{"fade", "crossfade"}, xfadeTransitions[1:]...)
+	return append([]string{"fade", "crossfade", "iris", "iris-in"}, xfadeTransitions[1:]...)
 }
 
 func splitAudioParamSchema() map[string]any {
