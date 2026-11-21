@@ -62,34 +62,6 @@ const characterElementsTotalMax = 4
 // whether or not a notice admits it — the errFalKeyframesUnsupported stance.
 var errCharacterReplaceUnsupported = errors.New("character replacement unsupported by the configured model")
 
-var (
-	// "Min duration: 3.0s, Max duration: 10.05s" — fal's standard file
-	// constraint suffix on Kling's video_url description.
-	characterMinDurationPattern = regexp.MustCompile(`(?i)min duration:\s*([0-9]+(?:\.[0-9]+)?)\s*s`)
-	characterMaxDurationPattern = regexp.MustCompile(`(?i)max duration:\s*([0-9]+(?:\.[0-9]+)?)\s*s`)
-	// "5 to 30 seconds long" — Recast's prose spelling.
-	characterRangeDurationPattern = regexp.MustCompile(`(?i)([0-9]+(?:\.[0-9]+)?)\s*(?:to|-|–)\s*([0-9]+(?:\.[0-9]+)?)\s*seconds`)
-)
-
-// characterSourceDurationWindow reads the source clip's accepted duration from
-// the video input's own documentation. ok is false when the description names
-// no window — the resolver then sends the clip and lets fal judge it.
-func characterSourceDurationWindow(description string) (minSeconds, maxSeconds float64, ok bool) {
-	if m := characterMaxDurationPattern.FindStringSubmatch(description); m != nil {
-		maxSeconds, _ = strconv.ParseFloat(m[1], 64)
-		if n := characterMinDurationPattern.FindStringSubmatch(description); n != nil {
-			minSeconds, _ = strconv.ParseFloat(n[1], 64)
-		}
-		return minSeconds, maxSeconds, maxSeconds > 0
-	}
-	if m := characterRangeDurationPattern.FindStringSubmatch(description); m != nil {
-		minSeconds, _ = strconv.ParseFloat(m[1], 64)
-		maxSeconds, _ = strconv.ParseFloat(m[2], 64)
-		return minSeconds, maxSeconds, maxSeconds > minSeconds
-	}
-	return 0, 0, false
-}
-
 // characterElementTokenPattern matches an @ElementN reference in a prompt.
 var characterElementTokenPattern = regexp.MustCompile(`@Element[0-9]+`)
 
@@ -160,7 +132,7 @@ func resolveCharacterReplaceBody(schema *ModelInputSchema, req VideoCharacterRep
 		return nil, nil, nil, fmt.Errorf("%w: the model %q has no video input — it cannot replace a character in an attached clip; pick a character-replacement model in Settings", errCharacterReplaceUnsupported, req.Model)
 	}
 	if req.SourceSeconds > 0 {
-		if minSeconds, maxSeconds, ok := characterSourceDurationWindow(videoProp.Description); ok {
+		if minSeconds, maxSeconds, ok := sourceDurationWindow(videoProp.Description); ok {
 			switch {
 			case req.SourceSeconds > maxSeconds:
 				return nil, nil, nil, fmt.Errorf("%w: the source clip is %.1fs but %q accepts at most %gs — split the clip first (split_video) and replace the character in each part", errCharacterReplaceUnsupported, req.SourceSeconds, req.Model, maxSeconds)

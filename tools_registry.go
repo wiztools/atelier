@@ -3524,7 +3524,7 @@ func videoReframeToolDefinition(config AppConfig) HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "reframe_video",
 		Title:       "Reframe video",
-		Description: "Use this when the user asks to convert an attached video to a different aspect ratio and wants the added canvas area GENERATED — turn a 16:9 clip into 9:16 vertical for Reels/Shorts/TikTok (or 1:1/4:5), or widen a portrait clip — keeping the original footage intact while outpainting what the new shape adds. Requires an attached video. Runs unattended like video generation on the configured cloud video provider (fal.ai or Replicate), takes a minute or more on longer clips, and inputs are capped around 60 seconds. When center-cropping is acceptable, or a blurred or black background behind the untouched full frame is fine, prefer the local free transform_video (aspectRatio with mode crop/blur/pad) instead.",
+		Description: "Use this when the user asks to convert an attached video to a different aspect ratio and wants the added canvas area GENERATED — turn a 16:9 clip into 9:16 vertical for Reels/Shorts/TikTok (or 1:1/4:5), or widen a portrait clip — keeping the original footage intact while outpainting what the new shape adds. Requires an attached video. Runs unattended like video generation on the configured cloud video provider (fal.ai or Replicate), takes a minute or more on longer clips, and inputs are capped around 60 seconds. When the user names what should appear in the added area (\"a city skyline behind them\"), pass it as prompt. When center-cropping is acceptable, or a blurred or black background behind the untouched full frame is fine, prefer the local free transform_video (aspectRatio with mode crop/blur/pad) instead.",
 		Example:     `{"name":"reframe_video","aspectRatio":"9:16"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: videoReframeParamSchema(),
@@ -3550,11 +3550,22 @@ func videoReframeToolDefinition(config AppConfig) HarnessToolDefinition {
 				return nil, "video reframing unavailable", errors.New("no video reframe model is configured")
 			}
 			aspect := strings.TrimSpace(call.AspectRatio)
+			// Resolution precedence mirrors the generate_video tier rule: an
+			// explicit resolution on the call wins; otherwise the configured
+			// Generation.Video.Resolution default applies (canonicalized here
+			// as well as in mergeAppConfig because per-conversation overrides
+			// and tests build configs without that pass); "" keeps the model's
+			// own default tier.
+			resolution := strings.TrimSpace(call.Resolution)
+			if resolution == "" {
+				resolution = normalizeVideoResolutionTier(tools.Config.Generation.Video.Resolution)
+			}
 			generated, err := tools.ReframeVideo(ctx, VideoReframeRequest{
 				Model:       model,
 				Video:       attachedVideo,
 				AspectRatio: aspect,
-				Resolution:  strings.TrimSpace(call.Resolution),
+				Resolution:  resolution,
+				Prompt:      strings.TrimSpace(call.Content),
 			})
 			if err != nil {
 				return nil, "video reframing failed", err
@@ -3594,7 +3605,8 @@ func videoReframeParamSchema() map[string]any {
 		"additionalProperties": false,
 		"properties": map[string]any{
 			"aspectRatio": enumParam(`Required — the target shape: "9:16" for vertical (Reels/Shorts/TikTok), "16:9" to widen a portrait clip, "1:1", "4:5", "5:4", "4:3", "3:4", "3:2", "2:3", or "21:9". The model generates the added canvas area; the ratio must be one the configured model lists (unsupported ones fail with the model's supported set).`, "1:1", "4:5", "5:4", "9:16", "16:9", "4:3", "3:4", "3:2", "2:3", "21:9"),
-			"resolution":  enumParam(`Optional — the output resolution tier, "720p" or "1080p" (omit for the model's default).`, "720p", "1080p"),
+			"prompt":      stringParam(`Optional — what to paint into the added canvas area, when the user names content for it (e.g. "a city skyline behind the subject"). Omitted on a bare ratio-only ask; reframe endpoints that require a description get a generic keep-the-scene instruction instead.`),
+			"resolution":  enumParam(`Optional — the output resolution tier, "720p" or "1080p". Omit to use the configured default resolution (or let the model choose when no default is set); an unsupported value is dropped with a notice and the model's default is used.`, "720p", "1080p"),
 			"model":       stringParam("Optional video reframe model override."),
 		},
 		"required": []string{"aspectRatio"},

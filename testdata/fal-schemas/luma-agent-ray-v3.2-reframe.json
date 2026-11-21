@@ -1,0 +1,447 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Queue OpenAPI for luma/agent/ray/v3.2/reframe",
+    "version": "1.0.0",
+    "description": "The OpenAPI schema for the luma/agent/ray/v3.2/reframe queue.",
+    "x-fal-metadata": {
+      "endpointId": "luma/agent/ray/v3.2/reframe",
+      "category": "video-to-video",
+      "thumbnailUrl": "https://v3b.fal.media/files/b/0a9dd7b5/EYZitiCzNxOgXBBIwJFBQ_b17d775dd8f64f82b17fbcbf06e2ba9f.jpg",
+      "playgroundUrl": "https://fal.ai/models/luma/agent/ray/v3.2/reframe",
+      "documentationUrl": "https://fal.ai/models/luma/agent/ray/v3.2/reframe/api",
+      "about": "ray-3.2 aspect-ratio reframe via the Luma Agents API."
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "apiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Authorization",
+        "description": "Fal Key"
+      }
+    },
+    "schemas": {
+      "QueueStatus": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "IN_QUEUE",
+              "IN_PROGRESS",
+              "COMPLETED"
+            ]
+          },
+          "request_id": {
+            "type": "string",
+            "description": "The request id."
+          },
+          "response_url": {
+            "type": "string",
+            "description": "The response url."
+          },
+          "status_url": {
+            "type": "string",
+            "description": "The status url."
+          },
+          "cancel_url": {
+            "type": "string",
+            "description": "The cancel url."
+          },
+          "logs": {
+            "type": "object",
+            "description": "The logs.",
+            "additionalProperties": true
+          },
+          "metrics": {
+            "type": "object",
+            "description": "The metrics.",
+            "additionalProperties": true
+          },
+          "queue_position": {
+            "type": "integer",
+            "description": "The queue position."
+          }
+        },
+        "required": [
+          "status",
+          "request_id"
+        ]
+      },
+      "AgentRayV32ReframeInput": {
+        "x-fal-order-properties": [
+          "prompt",
+          "video_url",
+          "aspect_ratio",
+          "resolution",
+          "duration",
+          "source_position",
+          "enable_safety_checker"
+        ],
+        "title": "RayReframeRequest",
+        "properties": {
+          "resolution": {
+            "description": "Resolution of the reframed video. Higher resolutions cost more.",
+            "default": "540p",
+            "title": "Resolution",
+            "enum": [
+              "540p",
+              "720p",
+              "1080p"
+            ],
+            "type": "string"
+          },
+          "duration": {
+            "description": "Duration of the reframed video. Defaults to matching the source video's duration; set explicitly to 5s or 10s to override.",
+            "title": "Duration",
+            "anyOf": [
+              {
+                "enum": [
+                  "5s",
+                  "10s"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "video_url": {
+            "description": "URL of the source video to reframe (must be 10 seconds or less).",
+            "title": "Video Url",
+            "examples": [
+              "https://storage.googleapis.com/falserverless/example_inputs/birefnet-video-input.mp4"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "enable_safety_checker": {
+            "description": "Authorized callers may set false to request relaxed screening.",
+            "default": true,
+            "title": "Enable Safety Checker",
+            "type": "boolean"
+          },
+          "source_position": {
+            "description": "Optional normalized source rectangle controlling where the source video sits in the output canvas.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RayReframeSourcePosition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "prompt": {
+            "description": "Text prompt describing the content to paint into the newly exposed canvas area when reframing to the target aspect ratio.",
+            "title": "Prompt",
+            "examples": [
+              "Extend the scene into cinematic widescreen with matching lighting and background detail."
+            ],
+            "maxLength": 6000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "aspect_ratio": {
+            "description": "Target aspect ratio for the reframed video.",
+            "title": "Aspect Ratio",
+            "examples": [
+              "21:9"
+            ],
+            "enum": [
+              "3:4",
+              "4:3",
+              "1:1",
+              "9:16",
+              "16:9",
+              "21:9"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object",
+        "required": [
+          "prompt",
+          "video_url",
+          "aspect_ratio"
+        ]
+      },
+      "AgentRayV32ReframeOutput": {
+        "x-fal-order-properties": [
+          "video",
+          "exr_file"
+        ],
+        "title": "VideoOutput",
+        "properties": {
+          "exr_file": {
+            "description": "The generated EXR sidecar when exr_export is true. This may be a single EXR file or a ZIP package depending on Luma's export shape.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/File"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "video": {
+            "description": "The generated video.",
+            "$ref": "#/components/schemas/File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "video"
+        ]
+      },
+      "RayReframeSourcePosition": {
+        "x-fal-order-properties": [
+          "x_norm",
+          "y_norm",
+          "w_norm",
+          "h_norm"
+        ],
+        "title": "RayReframeSourcePosition",
+        "properties": {
+          "w_norm": {
+            "description": "Width of the source rectangle as a fraction of output width.",
+            "title": "W Norm",
+            "maximum": 2,
+            "exclusiveMinimum": 0,
+            "type": "number"
+          },
+          "x_norm": {
+            "minimum": -2,
+            "description": "Left edge of the source rectangle as a fraction of output width.",
+            "maximum": 2,
+            "title": "X Norm",
+            "type": "number"
+          },
+          "y_norm": {
+            "minimum": -2,
+            "description": "Top edge of the source rectangle as a fraction of output height.",
+            "maximum": 2,
+            "title": "Y Norm",
+            "type": "number"
+          },
+          "h_norm": {
+            "description": "Height of the source rectangle as a fraction of output height.",
+            "title": "H Norm",
+            "maximum": 2,
+            "exclusiveMinimum": 0,
+            "type": "number"
+          }
+        },
+        "type": "object",
+        "required": [
+          "x_norm",
+          "y_norm",
+          "w_norm",
+          "h_norm"
+        ]
+      },
+      "File": {
+        "x-fal-order-properties": [
+          "url",
+          "content_type",
+          "file_name",
+          "file_size"
+        ],
+        "title": "File",
+        "properties": {
+          "url": {
+            "description": "The URL where the file can be downloaded from.",
+            "title": "Url",
+            "type": "string"
+          },
+          "file_size": {
+            "description": "The size of the file in bytes.",
+            "title": "File Size",
+            "examples": [
+              4404019
+            ],
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "content_type": {
+            "description": "The mime type of the file.",
+            "title": "Content Type",
+            "examples": [
+              "image/png"
+            ],
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "file_name": {
+            "description": "The name of the file. It will be auto-generated if not provided.",
+            "title": "File Name",
+            "examples": [
+              "z9RV14K95DvU.png"
+            ],
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "url"
+        ]
+      }
+    }
+  },
+  "paths": {
+    "/luma/agent/ray/v3.2/reframe/requests/{request_id}/status": {
+      "get": {
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Request ID"
+            }
+          },
+          {
+            "name": "logs",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "description": "Whether to include logs (`1`) in the response or not (`0`)."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The request status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueueStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/luma/agent/ray/v3.2/reframe/requests/{request_id}/cancel": {
+      "put": {
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Request ID"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The request was cancelled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "description": "Whether the request was cancelled successfully."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/luma/agent/ray/v3.2/reframe": {
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentRayV32ReframeInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The request status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueueStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/luma/agent/ray/v3.2/reframe/requests/{request_id}": {
+      "get": {
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Request ID"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Result of the request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentRayV32ReframeOutput"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "https://queue.fal.run"
+    }
+  ],
+  "security": [
+    {
+      "apiKeyAuth": []
+    }
+  ]
+}

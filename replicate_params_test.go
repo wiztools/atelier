@@ -1079,6 +1079,117 @@ func TestResolveReplicateVideoReframeInput(t *testing.T) {
 	}
 }
 
+// TestResolveReplicateVideoReframeInputPrompt pins the replicate reframe
+// resolver's prompt contract — the fal sibling's rules: an authored prompt
+// binds where the schema declares the input; a schema that REQUIRES one
+// without an authored prompt gets the generic steering line under a notice;
+// a required aspect ratio with none given refuses; an unfillable required
+// input refuses before the prediction is submitted; and the nil-schema
+// fallback passes an authored prompt through.
+func TestResolveReplicateVideoReframeInputPrompt(t *testing.T) {
+	openSchema := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"video":{"type":"string"},
+		"aspect_ratio":{"type":"string","enum":["16:9","9:16"]},
+		"prompt":{"type":"string"}
+	}}}}}`)
+	t.Run("authored prompt binds", func(t *testing.T) {
+		input, notices, err := resolveReplicateVideoReframeInput(openSchema, VideoReframeRequest{
+			Model: "luma/reframe-video", Video: "data:video/mp4;base64,QUFB", AspectRatio: "9:16", Prompt: "  a calm ocean horizon  ",
+		})
+		if err != nil {
+			t.Fatalf("reframe: %v", err)
+		}
+		if input["prompt"] != "a calm ocean horizon" || len(notices) != 0 {
+			t.Fatalf("input = %v, notices = %v, want the trimmed prompt and no notices", input, notices)
+		}
+	})
+	t.Run("required prompt synthesizes the steering line", func(t *testing.T) {
+		gated := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{
+			"video":{"type":"string"},
+			"aspect_ratio":{"type":"string","enum":["16:9","9:16"]},
+			"prompt":{"type":"string"}
+		},"required":["video","aspect_ratio","prompt"]}}}}`)
+		input, notices, err := resolveReplicateVideoReframeInput(gated, VideoReframeRequest{
+			Model: "owner/model", Video: "data:video/mp4;base64,QUFB", AspectRatio: "9:16",
+		})
+		if err != nil {
+			t.Fatalf("reframe: %v — the steering line must fill the required prompt, not a refusal", err)
+		}
+		if input["prompt"] != reframeCanvasSteerPrompt {
+			t.Fatalf("input[prompt] = %v, want the generic steering line", input["prompt"])
+		}
+		if len(notices) != 1 || !strings.Contains(notices[0], "requires a prompt") {
+			t.Fatalf("notices = %v, want one requires-a-prompt notice", notices)
+		}
+	})
+	t.Run("required ratio without one refuses", func(t *testing.T) {
+		gated := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{
+			"video":{"type":"string"},
+			"aspect_ratio":{"type":"string","enum":["16:9","9:16"]}
+		},"required":["video","aspect_ratio"]}}}}`)
+		_, _, err := resolveReplicateVideoReframeInput(gated, VideoReframeRequest{
+			Model: "owner/model", Video: "data:video/mp4;base64,QUFB",
+		})
+		if err == nil || !strings.Contains(err.Error(), "requires an aspect ratio") {
+			t.Fatalf("err = %v, want the required-ratio refusal", err)
+		}
+	})
+	t.Run("unfillable required input refuses", func(t *testing.T) {
+		gated := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{
+			"video":{"type":"string"},
+			"aspect_ratio":{"type":"string","enum":["16:9","9:16"]},
+			"seed_image":{"type":"string"}
+		},"required":["video","aspect_ratio","seed_image"]}}}}`)
+		_, _, err := resolveReplicateVideoReframeInput(gated, VideoReframeRequest{
+			Model: "owner/model", Video: "data:video/mp4;base64,QUFB", AspectRatio: "9:16",
+		})
+		if err == nil || !strings.Contains(err.Error(), "seed_image") || !strings.Contains(err.Error(), "pick a reframe model in Settings") {
+			t.Fatalf("err = %v, want an up-front refusal naming seed_image and the remedy", err)
+		}
+	})
+	t.Run("nil schema passes an authored prompt through", func(t *testing.T) {
+		input, _, err := resolveReplicateVideoReframeInput(nil, VideoReframeRequest{
+			Model: "owner/model", Video: "data:video/mp4;base64,QUFB", AspectRatio: "9:16", Prompt: "a skyline",
+		})
+		if err != nil || input["prompt"] != "a skyline" {
+			t.Fatalf("nil-schema fallback = %v, %v, want the authored prompt carried", input, err)
+		}
+	})
+}
+
+// TestResolveReplicateVideoReframeInputDurationWindow pins the replicate
+// reframe resolver's pre-submit length guard — the fal sibling's rule: a clip
+// outside the video input's own documented window refuses before the
+// prediction is submitted, naming split_video; a clip at the cap rides; a
+// description without a window sends regardless.
+func TestResolveReplicateVideoReframeInputDurationWindow(t *testing.T) {
+	capped := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"video":{"type":"string","description":"URL of the source video to reframe (must be 10 seconds or less)."},
+		"aspect_ratio":{"type":"string","enum":["16:9","9:16"]}
+	}}}}}`)
+	_, _, err := resolveReplicateVideoReframeInput(capped, VideoReframeRequest{
+		Model: "luma/reframe-video", Video: "data:video/mp4;base64,QUFB", AspectRatio: "9:16", SourceSeconds: 10.144,
+	})
+	if err == nil || !strings.Contains(err.Error(), "accepts at most 10s") || !strings.Contains(err.Error(), "split_video") {
+		t.Fatalf("err = %v, want an up-front refusal naming the 10s cap and split_video", err)
+	}
+	input, _, err := resolveReplicateVideoReframeInput(capped, VideoReframeRequest{
+		Model: "luma/reframe-video", Video: "data:video/mp4;base64,QUFB", AspectRatio: "9:16", SourceSeconds: 10,
+	})
+	if err != nil || input["video"] == nil {
+		t.Fatalf("input = %v, err = %v — a clip at the documented cap must ride", input, err)
+	}
+	open := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"video":{"type":"string"},
+		"aspect_ratio":{"type":"string","enum":["16:9","9:16"]}
+	}}}}}`)
+	if input, _, err = resolveReplicateVideoReframeInput(open, VideoReframeRequest{
+		Model: "luma/reframe-video", Video: "data:video/mp4;base64,QUFB", AspectRatio: "9:16", SourceSeconds: 500,
+	}); err != nil || input["video"] == nil {
+		t.Fatalf("input = %v, err = %v — the guard must stay quiet without a window", input, err)
+	}
+}
+
 // TestReplicateVideoEditingListerFilters pins the video-editing collection's
 // two partitions.
 func TestReplicateVideoEditingListerFilters(t *testing.T) {

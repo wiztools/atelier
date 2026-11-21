@@ -221,10 +221,15 @@ func TestCharacterSourceDurationWindow(t *testing.T) {
 	}{
 		{"Max file size: 200.0MB, Min duration: 3.0s, Max duration: 10.05s, Min FPS: 24.0", 3, 10.05, true},
 		{"The source video, 5 to 30 seconds long, with no single shot longer than 15 seconds.", 5, 30, true},
+		// Luma agent reframe's prose spelling, the one that sailed a 10.144s
+		// clip into a field-less fal 422 (conv_9f06e02c84054ee6d96045e3).
+		{"URL of the source video to reframe (must be 10 seconds or less).", 0, 10, true},
+		{"must be 5 seconds or less, mono file", 0, 5, true},
 		{"URL of the input video.", 0, 0, false},
+		{"no constraint worth 30 seconds here", 0, 0, false},
 	}
 	for _, tc := range cases {
-		min, max, ok := characterSourceDurationWindow(tc.desc)
+		min, max, ok := sourceDurationWindow(tc.desc)
 		if ok != tc.ok || min != tc.min || max != tc.max {
 			t.Errorf("window(%q) = %g, %g, %v; want %g, %g, %v", tc.desc, min, max, ok, tc.min, tc.max, tc.ok)
 		}

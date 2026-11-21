@@ -64,7 +64,17 @@ type SchemaProperty struct {
 // ModelInputSchema is the parsed input model for one fal endpoint.
 type ModelInputSchema struct {
 	Properties map[string]SchemaProperty
-	order      []string
+	// Required lists the input schema's required property names (OpenAPI's
+	// top-level `required` array). The parser historically kept only
+	// properties, which left cross-field demands invisible — a body built
+	// from the mapped canonicals could still violate the endpoint's own
+	// contract and 422 only after the request left the app
+	// (conv_def985b24422d39a7410f722: luma/agent/ray/v3.2/reframe requires
+	// `prompt` beside video_url/aspect_ratio, and the prompt-less reframe
+	// body failed at fal three rounds in a row). Resolvers read it through
+	// unfillableRequiredInputs to refuse before any money moves.
+	Required []string
+	order    []string
 }
 
 func (s *ModelInputSchema) property(name string) (SchemaProperty, bool) {
@@ -73,6 +83,29 @@ func (s *ModelInputSchema) property(name string) (SchemaProperty, bool) {
 	}
 	p, ok := s.Properties[name]
 	return p, ok
+}
+
+// unfillableRequiredInputs returns the schema's required property names that
+// declare no default and are absent from filled — the inputs an endpoint
+// demands that the caller's canonical mapping did not write, the gap a
+// downstream 422 "Field required" reports only after the request leaves the
+// app. A required property WITH a declared default is satisfied by the
+// endpoint itself (enable_safety_checker's true) and never counts.
+func unfillableRequiredInputs(schema *ModelInputSchema, filled []string) []string {
+	if schema == nil || len(schema.Required) == 0 {
+		return nil
+	}
+	var missing []string
+	for _, name := range schema.Required {
+		if contains(filled, name) {
+			continue
+		}
+		if prop, ok := schema.property(name); ok && prop.Default != nil {
+			continue
+		}
+		missing = append(missing, name)
+	}
+	return missing
 }
 
 // objectProps returns object-typed properties in declared order (stable scan).
@@ -142,6 +175,7 @@ func schemaRefTarget(ref string, components map[string]json.RawMessage) (json.Ra
 
 type openAPIModel struct {
 	Properties map[string]json.RawMessage `json:"properties"`
+	Required   []string                   `json:"required"`
 }
 
 // parseModelInputSchema finds the single `*Input` schema in the doc and
@@ -195,7 +229,7 @@ func parseModelInputSchema(raw []byte) (*ModelInputSchema, error) {
 			order = append(order, name)
 		}
 	}
-	schema := &ModelInputSchema{Properties: map[string]SchemaProperty{}, order: order}
+	schema := &ModelInputSchema{Properties: map[string]SchemaProperty{}, Required: model.Required, order: order}
 	for _, name := range order {
 		schema.Properties[name] = toSchemaProperty(name, model.Properties[name], doc.Components.Schemas, 0)
 	}

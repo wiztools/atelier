@@ -786,8 +786,12 @@ var replicateVideoReframeSynonyms = map[string][]string{
 
 // resolveReplicateVideoReframeInput maps a canonical VideoReframeRequest onto
 // the Replicate reframer model's native input schema — the replicate sibling
-// of resolveVideoReframeBody. A nil schema yields the minimal {video,
-// aspect_ratio?} fallback.
+// of resolveVideoReframeBody, carrying the same prompt contract: an authored
+// prompt binds where the schema declares the input, a schema that REQUIRES
+// one without an authored prompt gets the generic steering line under a
+// notice (reframeCanvasSteerPrompt), and any other schema-required input the
+// mapping cannot fill refuses before the prediction is submitted. A nil
+// schema yields the minimal {video, aspect_ratio?} fallback.
 func resolveReplicateVideoReframeInput(schema *ModelInputSchema, req VideoReframeRequest) (map[string]any, []string, error) {
 	video := falVideoURL(strings.TrimSpace(req.Video))
 	ov := Overrides{}
@@ -796,27 +800,63 @@ func resolveReplicateVideoReframeInput(schema *ModelInputSchema, req VideoRefram
 		if aspect := strings.TrimSpace(req.AspectRatio); aspect != "" {
 			body["aspect_ratio"] = aspect
 		}
+		if prompt := strings.TrimSpace(req.Prompt); prompt != "" {
+			body["prompt"] = prompt
+		}
 		return body, nil, nil
 	}
 	body := map[string]any{}
 	var notices []string
+	filled := make([]string, 0, 4)
 	if path, prop, ok := findNative(schema, ov, "replicate-video-reframe", req.Model, "sourceVideo"); !ok {
 		return nil, notices, fmt.Errorf("the selected model %q has no video input to reframe", req.Model)
 	} else {
+		if req.SourceSeconds > 0 {
+			if minSeconds, maxSeconds, ok := sourceDurationWindow(prop.Description); ok {
+				switch {
+				case req.SourceSeconds > maxSeconds:
+					return nil, notices, fmt.Errorf(
+						"the source clip is %.1fs but the reframe model %q accepts at most %gs — trim it first (split_video) and reframe the part you need",
+						req.SourceSeconds, req.Model, maxSeconds)
+				case minSeconds > 0 && req.SourceSeconds < minSeconds:
+					return nil, notices, fmt.Errorf(
+						"the source clip is %.1fs but the reframe model %q needs at least %gs of footage",
+						req.SourceSeconds, req.Model, minSeconds)
+				}
+			}
+		}
 		setBodyPath(schema, body, path, coerceVideos(prop, []string{video}))
+		filled = append(filled, topLevelInputName(path))
 	}
-	if aspect := strings.TrimSpace(req.AspectRatio); aspect != "" {
-		if path, prop, ok := findNative(schema, ov, "replicate-video-reframe", req.Model, "aspectRatio"); ok {
+	if path, prop, ok := findNative(schema, ov, "replicate-video-reframe", req.Model, "aspectRatio"); ok {
+		if aspect := strings.TrimSpace(req.AspectRatio); aspect != "" {
 			if canonical, allowed := enumValueFor(prop, aspect); allowed {
 				setBodyPath(schema, body, path, coerceVideoValue(prop, canonical))
+				filled = append(filled, topLevelInputName(path))
 			} else {
 				notices = append(notices, fmt.Sprintf(
 					"The selected model %q does not accept aspect ratio %q; ignoring it and letting the model choose.",
 					req.Model, aspect))
 			}
-		} else {
+		} else if requiredInputName(schema, path) && prop.Default == nil {
+			return nil, notices, fmt.Errorf(
+				"the selected model %q requires an aspect ratio, which was not given — name the target shape like \"9:16\"",
+				req.Model)
+		}
+	} else if strings.TrimSpace(req.AspectRatio) != "" {
+		notices = append(notices, fmt.Sprintf(
+			"The selected model %q has no aspect-ratio control; the reframe keeps the source's shape.",
+			req.Model))
+	}
+	if path, prop, ok := findNative(schema, ov, "replicate-video-reframe", req.Model, "prompt"); ok {
+		if prompt := strings.TrimSpace(req.Prompt); prompt != "" {
+			setBodyPath(schema, body, path, coerceVideoValue(prop, prompt))
+			filled = append(filled, topLevelInputName(path))
+		} else if requiredInputName(schema, path) && prop.Default == nil {
+			setBodyPath(schema, body, path, coerceVideoValue(prop, reframeCanvasSteerPrompt))
+			filled = append(filled, topLevelInputName(path))
 			notices = append(notices, fmt.Sprintf(
-				"The selected model %q has no aspect-ratio control; the reframe keeps the source's shape.",
+				"The reframe model %q requires a prompt describing what to paint into the added canvas; the ask named none, so a generic keep-the-scene instruction was sent.",
 				req.Model))
 		}
 	}
@@ -824,6 +864,7 @@ func resolveReplicateVideoReframeInput(schema *ModelInputSchema, req VideoRefram
 		if path, prop, ok := findNative(schema, ov, "replicate-video-reframe", req.Model, "resolution"); ok {
 			if canonical, allowed := enumValueFor(prop, res); allowed {
 				setBodyPath(schema, body, path, coerceVideoValue(prop, canonical))
+				filled = append(filled, topLevelInputName(path))
 			} else {
 				notices = append(notices, fmt.Sprintf(
 					"The selected model %q does not accept resolution %q; using the model's default tier.",
@@ -834,6 +875,11 @@ func resolveReplicateVideoReframeInput(schema *ModelInputSchema, req VideoRefram
 				"The selected model %q has no resolution control; using the model's default tier.",
 				req.Model))
 		}
+	}
+	if missing := unfillableRequiredInputs(schema, filled); len(missing) > 0 {
+		return nil, notices, fmt.Errorf(
+			"the selected model %q requires the input(s) %s, which reframe_video cannot provide — pick a reframe model in Settings",
+			req.Model, strings.Join(missing, ", "))
 	}
 	return body, notices, nil
 }

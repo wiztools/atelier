@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -2275,6 +2276,51 @@ func resolveVideoUpscaleBody(schema *ModelInputSchema, req VideoUpscaleRequest, 
 	return body, notices, nil
 }
 
+// reframeCanvasSteerPrompt is the generic outpaint instruction sent when a
+// reframe endpoint requires a prompt and the ask authored none — a bare
+// "reframe to 9:16" carries no canvas content of its own, and the deterministic
+// keep-the-scene line IS the ask's intent. The runware SFX resolver's
+// steering-line rule.
+const reframeCanvasSteerPrompt = "Extend the scene naturally into the new aspect ratio, keeping the original footage intact."
+
+var (
+	// "Min duration: 3.0s, Max duration: 10.05s" — fal's standard file
+	// constraint suffix on Kling's video_url description.
+	sourceMinDurationPattern = regexp.MustCompile(`(?i)min duration:\s*([0-9]+(?:\.[0-9]+)?)\s*s`)
+	sourceMaxDurationPattern = regexp.MustCompile(`(?i)max duration:\s*([0-9]+(?:\.[0-9]+)?)\s*s`)
+	// "5 to 30 seconds long" — Recast's prose spelling.
+	sourceRangeDurationPattern = regexp.MustCompile(`(?i)([0-9]+(?:\.[0-9]+)?)\s*(?:to|-|–)\s*([0-9]+(?:\.[0-9]+)?)\s*seconds`)
+	// "must be 10 seconds or less" — Luma agent reframe's prose spelling
+	// (conv_9f06e02c84054ee6d96045e3: a 10.144s clip sailed into a
+	// field-less fal 422 "input_value_error" because no pattern read it).
+	sourceLessDurationPattern = regexp.MustCompile(`(?i)([0-9]+(?:\.[0-9]+)?)\s*seconds?\s+or less`)
+)
+
+// sourceDurationWindow reads the source clip's accepted duration from a media
+// input's own documentation — the shared form of characterSourceDurationWindow,
+// serving both the character-replacement resolver and the reframe resolvers'
+// pre-submit length guards. ok is false when the description names no window —
+// the resolver then sends the clip and lets the endpoint judge it.
+func sourceDurationWindow(description string) (minSeconds, maxSeconds float64, ok bool) {
+	if m := sourceMaxDurationPattern.FindStringSubmatch(description); m != nil {
+		maxSeconds, _ = strconv.ParseFloat(m[1], 64)
+		if n := sourceMinDurationPattern.FindStringSubmatch(description); n != nil {
+			minSeconds, _ = strconv.ParseFloat(n[1], 64)
+		}
+		return minSeconds, maxSeconds, maxSeconds > 0
+	}
+	if m := sourceRangeDurationPattern.FindStringSubmatch(description); m != nil {
+		minSeconds, _ = strconv.ParseFloat(m[1], 64)
+		maxSeconds, _ = strconv.ParseFloat(m[2], 64)
+		return minSeconds, maxSeconds, maxSeconds > minSeconds
+	}
+	if m := sourceLessDurationPattern.FindStringSubmatch(description); m != nil {
+		maxSeconds, _ = strconv.ParseFloat(m[1], 64)
+		return 0, maxSeconds, maxSeconds > 0
+	}
+	return 0, 0, false
+}
+
 // resolveVideoReframeBody maps a VideoReframeRequest onto the model's native
 // input schema, returning the fal body and user-facing notices. Both the
 // source clip and the target aspect ratio are the tool's entire purpose, so an
@@ -2287,24 +2333,52 @@ func resolveVideoUpscaleBody(schema *ModelInputSchema, req VideoUpscaleRequest, 
 // legitimate fallback), a reframe that silently picks a different ratio is
 // not what the user asked for. Resolution is degradable — endpoints apply
 // their own default tier — so a missing or unsupported tier stays a notice.
+// An authored prompt binds where the model declares a prompt input; an
+// endpoint that REQUIRES one without an authored prompt gets the generic
+// steering line under a notice (a bare reframe ask carries no canvas content,
+// and a prompt-less body 422s — conv_def985b24422d39a7410f722:
+// luma/agent/ray/v3.2/reframe demanded `prompt` three rounds running). After
+// mapping, any schema-required input the mapping did not fill (and that
+// declares no default) is refused up front, naming it — the
+// refuse-before-money-moves contract instead of an opaque fal 422 per round.
 // A nil schema yields the legacy {video_url, aspect_ratio} body plus a notice.
 func resolveVideoReframeBody(schema *ModelInputSchema, req VideoReframeRequest, ov Overrides) (map[string]any, []string, error) {
 	video := falVideoURL(strings.TrimSpace(req.Video))
 	aspect := strings.TrimSpace(req.AspectRatio)
+	authored := strings.TrimSpace(req.Prompt)
 
 	if schema == nil {
 		body := map[string]any{"video_url": video, "aspect_ratio": aspect}
 		if res := strings.TrimSpace(req.Resolution); res != "" {
 			body["resolution"] = res
 		}
+		if authored != "" {
+			body["prompt"] = authored
+		}
 		return body, []string{"Couldn't load the model's parameter schema; sent the source video and aspect ratio with default field names."}, nil
 	}
 
 	body := map[string]any{}
 	var notices []string
+	filled := make([]string, 0, 4)
 
 	if path, prop, ok := findNative(schema, ov, "video", req.Model, "sourceVideo"); ok {
+		if req.SourceSeconds > 0 {
+			if minSeconds, maxSeconds, ok := sourceDurationWindow(prop.Description); ok {
+				switch {
+				case req.SourceSeconds > maxSeconds:
+					return nil, notices, fmt.Errorf(
+						"the source clip is %.1fs but the reframe model %q accepts at most %gs — trim it first (split_video) and reframe the part you need",
+						req.SourceSeconds, req.Model, maxSeconds)
+				case minSeconds > 0 && req.SourceSeconds < minSeconds:
+					return nil, notices, fmt.Errorf(
+						"the source clip is %.1fs but the reframe model %q needs at least %gs of footage",
+						req.SourceSeconds, req.Model, minSeconds)
+				}
+			}
+		}
 		setBodyPath(schema, body, path, coerceVideoValue(prop, video))
+		filled = append(filled, topLevelInputName(path))
 	} else {
 		return nil, notices, fmt.Errorf(
 			"the reframe model %q has no video input — it cannot reframe an attached video; pick a reframe model in Settings",
@@ -2313,6 +2387,7 @@ func resolveVideoReframeBody(schema *ModelInputSchema, req VideoReframeRequest, 
 	if path, prop, ok := findNative(schema, ov, "video", req.Model, "aspectRatio"); ok {
 		if canonical, allowed := enumValueFor(prop, aspect); allowed {
 			setBodyPath(schema, body, path, coerceVideoValue(prop, canonical))
+			filled = append(filled, topLevelInputName(path))
 		} else {
 			return nil, notices, fmt.Errorf(
 				"the reframe model %q does not accept aspect ratio %q — it supports %s; pick a supported ratio or a different reframe model in Settings",
@@ -2323,10 +2398,28 @@ func resolveVideoReframeBody(schema *ModelInputSchema, req VideoReframeRequest, 
 			"the reframe model %q has no aspect-ratio input — it cannot be told the target shape; pick a reframe model in Settings",
 			req.Model)
 	}
+	if path, prop, ok := findNative(schema, ov, "video", req.Model, "prompt"); ok {
+		switch {
+		case authored != "":
+			setBodyPath(schema, body, path, coerceVideoValue(prop, authored))
+			filled = append(filled, topLevelInputName(path))
+		case requiredInputName(schema, path) && prop.Default == nil:
+			setBodyPath(schema, body, path, coerceVideoValue(prop, reframeCanvasSteerPrompt))
+			filled = append(filled, topLevelInputName(path))
+			notices = append(notices, fmt.Sprintf(
+				"The reframe model %q requires a prompt describing what to paint into the added canvas; the ask named none, so a generic keep-the-scene instruction was sent.",
+				req.Model))
+		}
+	} else if authored != "" {
+		notices = append(notices, fmt.Sprintf(
+			"The reframe model %q has no prompt control; the authored canvas description was ignored.",
+			req.Model))
+	}
 	if res := strings.TrimSpace(req.Resolution); res != "" {
 		if path, prop, ok := findNative(schema, ov, "video", req.Model, "resolution"); ok {
 			if canonical, allowed := enumValueFor(prop, res); allowed {
 				setBodyPath(schema, body, path, coerceVideoValue(prop, canonical))
+				filled = append(filled, topLevelInputName(path))
 			} else {
 				notices = append(notices, fmt.Sprintf(
 					"The selected model %q does not support resolution %q; using the model's default tier.",
@@ -2338,7 +2431,25 @@ func resolveVideoReframeBody(schema *ModelInputSchema, req VideoReframeRequest, 
 				req.Model))
 		}
 	}
+	if missing := unfillableRequiredInputs(schema, filled); len(missing) > 0 {
+		return nil, notices, fmt.Errorf(
+			"the reframe model %q requires the input(s) %s, which reframe_video cannot provide — pick a reframe model in Settings",
+			req.Model, strings.Join(missing, ", "))
+	}
 	return body, notices, nil
+}
+
+// topLevelInputName is the schema-level name a mapped body path rides under —
+// the top segment of a possibly nested "object.field" path — the unit the
+// required list names.
+func topLevelInputName(path string) string {
+	return strings.SplitN(path, ".", 2)[0]
+}
+
+// requiredInputName reports whether the property a mapped path lands on is in
+// the schema's required list.
+func requiredInputName(schema *ModelInputSchema, path string) bool {
+	return contains(schema.Required, topLevelInputName(path))
 }
 
 // resolveVideoRestyleBody maps a VideoRestyleRequest onto the model's native

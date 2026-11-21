@@ -41,6 +41,37 @@ func TestParseModelInputSchemaNesting(t *testing.T) {
 	}
 }
 
+// TestParseModelInputSchemaRequired pins the required-list capture against the
+// real luma/agent/ray/v3.2/reframe doc (captured 2026-11-21): its input
+// declares prompt beside video_url/aspect_ratio as REQUIRED — the demand the
+// prompt-less reframe body violated three rounds running
+// (conv_def985b24422d39a7410f722). enable_safety_checker declares a default
+// and must carry it through, since unfillableRequiredInputs skips
+// defaulted properties.
+func TestParseModelInputSchemaRequired(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "fal-schemas", "luma-agent-ray-v3.2-reframe.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	schema, err := parseModelInputSchema(raw)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	want := []string{"prompt", "video_url", "aspect_ratio"}
+	if len(schema.Required) != len(want) {
+		t.Fatalf("required = %v, want %v", schema.Required, want)
+	}
+	for _, name := range want {
+		if !contains(schema.Required, name) {
+			t.Errorf("required = %v, want it to include %q", schema.Required, name)
+		}
+	}
+	safety, ok := schema.property("enable_safety_checker")
+	if !ok || safety.Default != true {
+		t.Errorf("enable_safety_checker = %+v (ok=%v), want the declared true default", safety, ok)
+	}
+}
+
 func minimaxFetch(ctx context.Context, model string) ([]byte, error) {
 	return os.ReadFile(filepath.Join("testdata", "fal-schemas", "minimax-speech-02-hd.json"))
 }

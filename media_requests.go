@@ -61,14 +61,23 @@ type VideoUpscaleRequest struct {
 // VideoReframeRequest is the input to fal's generative video reframer — the
 // outpainting sibling of VideoUpscaleRequest. Video is the source clip (a URL
 // or base64 data URI), AspectRatio the target shape ("9:16"), Resolution the
-// optional output tier ("720p"/"1080p"; empty lets the model apply its own
-// default). The result is a GeneratedVideo, carried through the same artifact
-// pipeline as generate_video.
+// optional output tier ("720p"/"1080p"; empty falls to the configured
+// Generation.Video.Resolution default, then the model's own), and Prompt an
+// optional description of what to paint into the added canvas area — some
+// reframers (luma/agent/ray/v3.2/reframe) declare it REQUIRED, and a resolver
+// that cannot bind it refuses before any money moves. SourceSeconds is the
+// staged clip's measured duration (0 when it could not be read), the unit the
+// resolvers' pre-submit length guard judges against the video input's own
+// documented window — the VideoCharacterReplaceRequest.SourceSeconds pattern.
+// The result is a GeneratedVideo, carried through the same artifact pipeline
+// as generate_video.
 type VideoReframeRequest struct {
-	Model       string `json:"model"`
-	Video       string `json:"video"`
-	AspectRatio string `json:"aspectRatio,omitempty"`
-	Resolution  string `json:"resolution,omitempty"`
+	Model         string  `json:"model"`
+	Video         string  `json:"video"`
+	AspectRatio   string  `json:"aspectRatio,omitempty"`
+	Resolution    string  `json:"resolution,omitempty"`
+	Prompt        string  `json:"prompt,omitempty"`
+	SourceSeconds float64 `json:"sourceSeconds,omitempty"`
 }
 
 // VideoRestyleRequest is the input to fal's video restyler — the style-transfer

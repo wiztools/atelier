@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -97,6 +98,36 @@ func TestReframeVideoToolDefaultsAndMapping(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = os.Remove(typed.Videos[0].TempPath) })
 		})
+	}
+}
+
+// TestReframeVideoToolForwardsPrompt pins the planner→call→request prompt
+// ride: the call's Content (where applyKwargs lands both prompt= and
+// content= kwargs) forwards as the request's Prompt, and the param schema
+// advertises prompt so tools-array planners can emit it — the channel whose
+// absence left conv_def985b24422d39a7410f722's planner narrating a fix it
+// could not express.
+func TestReframeVideoToolForwardsPrompt(t *testing.T) {
+	props, ok := videoReframeParamSchema()["properties"].(map[string]any)
+	if !ok || props["prompt"] == nil {
+		t.Fatal("videoReframeParamSchema properties must declare prompt — the planner cannot emit what the schema does not advertise")
+	}
+	var captured VideoReframeRequest
+	tools := HarnessToolExecutionContext{
+		Config:         AppConfig{Models: ConfigModels{ImageProvider: "fal"}},
+		AttachedVideos: []string{"data:video/mp4;base64,AAA"},
+		ReframeVideo: func(_ context.Context, req VideoReframeRequest) (GeneratedVideo, error) {
+			captured = req
+			return GeneratedVideo{Data: []byte("fake-mp4"), MimeType: "video/mp4"}, nil
+		},
+	}
+	def := videoReframeToolDefinition(AppConfig{})
+	call := HarnessToolCall{AspectRatio: "9:16", Content: "a city skyline behind the subject"}
+	if _, _, err := def.Execute(t.Context(), tools, call); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if captured.Prompt != "a city skyline behind the subject" {
+		t.Errorf("captured prompt = %q, want the call's content forwarded", captured.Prompt)
 	}
 }
 
@@ -284,6 +315,270 @@ func TestResolveVideoReframeBody(t *testing.T) {
 			t.Fatalf("notices = %v, want the schema-unavailable notice", notices)
 		}
 	})
+}
+
+// lumaReframeSchema parses the pinned luma/agent/ray/v3.2/reframe fixture —
+// the real endpoint whose schema declares prompt beside video_url/aspect_ratio
+// as REQUIRED and whose bare prompt-less body 422ed three rounds running
+// (conv_def985b24422d39a7410f722).
+func lumaReframeSchema(t *testing.T) *ModelInputSchema {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("testdata", "fal-schemas", "luma-agent-ray-v3.2-reframe.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	schema, err := parseModelInputSchema(raw)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	return schema
+}
+
+// TestResolveVideoReframeBodyPrompt pins the prompt contract: an authored
+// prompt binds where the schema declares the input; an endpoint that REQUIRES
+// one without an authored prompt gets the generic keep-the-scene steering
+// line under a notice (the runware SFX rule — conv_def985b24422d39a7410f722,
+// where the prompt-less body failed at fal three rounds in a row because the
+// planner had no channel to fix it); an optional prompt stays absent when
+// unauthored; a schema with no prompt input ignores an authored one with a
+// notice; and the legacy nil-schema fallback passes an authored prompt
+// through under the default field name.
+func TestResolveVideoReframeBodyPrompt(t *testing.T) {
+	schema := videoReframeSchema(nil, nil)
+	schema.Properties["prompt"] = SchemaProperty{Name: "prompt", Kind: schemaScalar}
+	schema.order = append(schema.order, "prompt")
+
+	t.Run("authored prompt binds", func(t *testing.T) {
+		body, notices, err := resolveVideoReframeBody(schema,
+			VideoReframeRequest{Model: "acme/reframe", Video: "https://example.com/v.mp4", AspectRatio: "9:16", Prompt: "  a city skyline behind the subject  "},
+			builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("resolveVideoReframeBody error: %v", err)
+		}
+		if body["prompt"] != "a city skyline behind the subject" {
+			t.Errorf("body[prompt] = %v, want the trimmed authored prompt", body["prompt"])
+		}
+		if len(notices) != 0 {
+			t.Errorf("notices = %v, want none", notices)
+		}
+	})
+	t.Run("unauthored optional prompt stays absent", func(t *testing.T) {
+		body, notices, err := resolveVideoReframeBody(schema,
+			VideoReframeRequest{Model: "acme/reframe", Video: "https://example.com/v.mp4", AspectRatio: "9:16"},
+			builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("resolveVideoReframeBody error: %v", err)
+		}
+		if _, present := body["prompt"]; present {
+			t.Errorf("body[prompt] = %v, want it omitted when unauthored and optional", body["prompt"])
+		}
+		if len(notices) != 0 {
+			t.Errorf("notices = %v, want none", notices)
+		}
+	})
+	t.Run("required prompt synthesizes the steering line", func(t *testing.T) {
+		required := videoReframeSchema(nil, nil)
+		required.Properties["prompt"] = SchemaProperty{Name: "prompt", Kind: schemaScalar}
+		required.order = append(required.order, "prompt")
+		required.Required = []string{"video_url", "aspect_ratio", "prompt"}
+		body, notices, err := resolveVideoReframeBody(required,
+			VideoReframeRequest{Model: "acme/reframe", Video: "https://example.com/v.mp4", AspectRatio: "9:16"},
+			builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("resolveVideoReframeBody error: %v — the steering line must satisfy the requirement, not a refusal", err)
+		}
+		if body["prompt"] != reframeCanvasSteerPrompt {
+			t.Errorf("body[prompt] = %v, want the generic steering line", body["prompt"])
+		}
+		if len(notices) != 1 || !strings.Contains(notices[0], "requires a prompt") {
+			t.Fatalf("notices = %v, want one requires-a-prompt notice", notices)
+		}
+	})
+	t.Run("authored prompt without a prompt input degrades with a notice", func(t *testing.T) {
+		body, notices, err := resolveVideoReframeBody(videoReframeSchema(nil, nil),
+			VideoReframeRequest{Model: "fal-ai/ltx-2.3/reframe", Video: "https://example.com/v.mp4", AspectRatio: "9:16", Prompt: "a skyline"},
+			builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("resolveVideoReframeBody error: %v", err)
+		}
+		if _, present := body["prompt"]; present {
+			t.Errorf("body[prompt] = %v, want it omitted on a model without the control", body["prompt"])
+		}
+		if len(notices) != 1 || !strings.Contains(notices[0], "no prompt control") {
+			t.Fatalf("notices = %v, want one no-prompt-control notice", notices)
+		}
+	})
+	t.Run("unfillable required input refuses before the submit", func(t *testing.T) {
+		gated := videoReframeSchema(nil, nil)
+		gated.Properties["seed_image"] = SchemaProperty{Name: "seed_image", Kind: schemaScalar}
+		gated.order = append(gated.order, "seed_image")
+		gated.Required = []string{"video_url", "aspect_ratio", "seed_image"}
+		_, _, err := resolveVideoReframeBody(gated,
+			VideoReframeRequest{Model: "acme/reframe", Video: "https://example.com/v.mp4", AspectRatio: "9:16"},
+			builtinFalOverrides())
+		if err == nil || !strings.Contains(err.Error(), "seed_image") || !strings.Contains(err.Error(), "pick a reframe model in Settings") {
+			t.Fatalf("err = %v, want an up-front refusal naming seed_image and the remedy", err)
+		}
+	})
+	t.Run("required input with a declared default is satisfied", func(t *testing.T) {
+		defaulted := videoReframeSchema(nil, nil)
+		defaulted.Properties["enable_safety_checker"] = SchemaProperty{Name: "enable_safety_checker", Kind: schemaScalar, Default: true}
+		defaulted.order = append(defaulted.order, "enable_safety_checker")
+		defaulted.Required = []string{"video_url", "aspect_ratio", "enable_safety_checker"}
+		body, _, err := resolveVideoReframeBody(defaulted,
+			VideoReframeRequest{Model: "acme/reframe", Video: "https://example.com/v.mp4", AspectRatio: "9:16"},
+			builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("resolveVideoReframeBody error: %v — the endpoint's own default covers it", err)
+		}
+		if _, present := body["enable_safety_checker"]; present {
+			t.Errorf("body[enable_safety_checker] = %v, want it left to the endpoint default", body["enable_safety_checker"])
+		}
+	})
+	t.Run("nil schema passes an authored prompt through", func(t *testing.T) {
+		body, notices, err := resolveVideoReframeBody(nil,
+			VideoReframeRequest{Model: "acme/reframe", Video: "https://example.com/v.mp4", AspectRatio: "9:16", Prompt: "a skyline"},
+			builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("resolveVideoReframeBody error: %v", err)
+		}
+		if body["prompt"] != "a skyline" {
+			t.Errorf("body[prompt] = %v, want the authored prompt on the legacy fallback", body["prompt"])
+		}
+		if len(notices) != 1 {
+			t.Fatalf("notices = %v, want the schema-unavailable notice", notices)
+		}
+	})
+}
+
+// TestResolveVideoReframeBodyLumaFixture drives the pinned real endpoint's
+// schema end to end: the required trio is filled by the mapping (video,
+// ratio, synthesized steering line), so the required-walk does not refuse,
+// and an authored prompt rides verbatim with no notices.
+func TestResolveVideoReframeBodyLumaFixture(t *testing.T) {
+	schema := lumaReframeSchema(t)
+	body, notices, err := resolveVideoReframeBody(schema,
+		VideoReframeRequest{Model: "luma/agent/ray/v3.2/reframe", Video: "https://example.com/v.mp4", AspectRatio: "9:16"},
+		builtinFalOverrides())
+	if err != nil {
+		t.Fatalf("resolveVideoReframeBody error: %v — the steering line must fill the required prompt", err)
+	}
+	if body["prompt"] != reframeCanvasSteerPrompt || body["video_url"] != "https://example.com/v.mp4" || body["aspect_ratio"] != "9:16" {
+		t.Fatalf("body = %v, want the required trio filled", body)
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], "generic keep-the-scene instruction") {
+		t.Fatalf("notices = %v, want the synthesized-prompt notice", notices)
+	}
+
+	body, notices, err = resolveVideoReframeBody(schema,
+		VideoReframeRequest{Model: "luma/agent/ray/v3.2/reframe", Video: "https://example.com/v.mp4", AspectRatio: "9:16", Prompt: "neon-lit alley, rain-slick pavement"},
+		builtinFalOverrides())
+	if err != nil {
+		t.Fatalf("resolveVideoReframeBody error: %v", err)
+	}
+	if body["prompt"] != "neon-lit alley, rain-slick pavement" || len(notices) != 0 {
+		t.Fatalf("body = %v, notices = %v, want the authored prompt verbatim and no notices", body, notices)
+	}
+}
+
+// TestResolveVideoReframeBodyDurationWindow pins the pre-submit length guard
+// (conv_9f06e02c84054ee6d96045e3: a 10.144s clip rode into
+// luma/agent/ray/v3.2/reframe, whose video_url description reads "must be 10
+// seconds or less", and came back as a field-less fal 422 "input_value_error"
+// nothing could act on): a clip past the video input's own documented window
+// refuses before the submit naming split_video, exactly at the cap passes,
+// a clip under a documented floor refuses, and a model whose description
+// names no window sends regardless of length (the endpoint judges it).
+func TestResolveVideoReframeBodyDurationWindow(t *testing.T) {
+	t.Run("over the documented cap refuses naming split_video", func(t *testing.T) {
+		_, _, err := resolveVideoReframeBody(lumaReframeSchema(t),
+			VideoReframeRequest{Model: "luma/agent/ray/v3.2/reframe", Video: "https://example.com/v.mp4", AspectRatio: "9:16", SourceSeconds: 10.144},
+			builtinFalOverrides())
+		if err == nil || !strings.Contains(err.Error(), "accepts at most 10s") || !strings.Contains(err.Error(), "split_video") {
+			t.Fatalf("err = %v, want an up-front refusal naming the 10s cap and split_video", err)
+		}
+	})
+	t.Run("exactly at the cap passes", func(t *testing.T) {
+		body, _, err := resolveVideoReframeBody(lumaReframeSchema(t),
+			VideoReframeRequest{Model: "luma/agent/ray/v3.2/reframe", Video: "https://example.com/v.mp4", AspectRatio: "9:16", SourceSeconds: 10},
+			builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("resolveVideoReframeBody error: %v — a clip at the documented cap must ride", err)
+		}
+		if body["video_url"] == nil {
+			t.Fatal("body must carry the source video")
+		}
+	})
+	t.Run("under the documented floor refuses", func(t *testing.T) {
+		floored := videoReframeSchema(nil, nil)
+		floored.Properties["video_url"] = SchemaProperty{Name: "video_url", Kind: schemaScalar, Description: "Min duration: 2s, Max duration: 30s"}
+		_, _, err := resolveVideoReframeBody(floored,
+			VideoReframeRequest{Model: "acme/reframe", Video: "https://example.com/v.mp4", AspectRatio: "9:16", SourceSeconds: 1.2},
+			builtinFalOverrides())
+		if err == nil || !strings.Contains(err.Error(), "needs at least 2s") {
+			t.Fatalf("err = %v, want the under-floor refusal", err)
+		}
+	})
+	t.Run("no documented window sends regardless of length", func(t *testing.T) {
+		body, _, err := resolveVideoReframeBody(videoReframeSchema(nil, nil),
+			VideoReframeRequest{Model: "fal-ai/ltx-2.3/reframe", Video: "https://example.com/v.mp4", AspectRatio: "9:16", SourceSeconds: 500},
+			builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("resolveVideoReframeBody error: %v — the guard must stay quiet without a window", err)
+		}
+		if body["video_url"] == nil {
+			t.Fatal("body must carry the source video")
+		}
+	})
+	t.Run("unreadable source skips the guard", func(t *testing.T) {
+		body, _, err := resolveVideoReframeBody(lumaReframeSchema(t),
+			VideoReframeRequest{Model: "luma/agent/ray/v3.2/reframe", Video: "https://example.com/v.mp4", AspectRatio: "9:16"},
+			builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("resolveVideoReframeBody error: %v — SourceSeconds 0 must skip the guard", err)
+		}
+		if body["video_url"] == nil {
+			t.Fatal("body must carry the source video")
+		}
+	})
+}
+
+// TestReframeVideoToolResolutionFallback pins the resolution precedence (the
+// generate_video tier rule): a call-stated tier wins, the configured
+// Generation.Video.Resolution default fills an omitted one, and an
+// uncanonicalizable config value keeps the model's own default.
+func TestReframeVideoToolResolutionFallback(t *testing.T) {
+	tests := []struct {
+		name           string
+		configTier     string
+		callResolution string
+		want           string
+	}{
+		{"configured default fills", "1080p", "", "1080p"},
+		{"call tier wins over config", "1080p", "720p", "720p"},
+		{"junky config canonicalizes to empty", "8k", "", ""},
+		{"unset config keeps the model default", "", "", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var captured VideoReframeRequest
+			tools := HarnessToolExecutionContext{
+				Config:         AppConfig{Generation: ConfigGeneration{Video: ConfigVideoGeneration{Resolution: tc.configTier}}},
+				AttachedVideos: []string{"data:video/mp4;base64,AAA"},
+				ReframeVideo: func(_ context.Context, req VideoReframeRequest) (GeneratedVideo, error) {
+					captured = req
+					return GeneratedVideo{Data: []byte("fake-mp4"), MimeType: "video/mp4"}, nil
+				},
+			}
+			def := videoReframeToolDefinition(AppConfig{})
+			if _, _, err := def.Execute(t.Context(), tools, HarnessToolCall{AspectRatio: "9:16", Resolution: tc.callResolution}); err != nil {
+				t.Fatalf("Execute returned error: %v", err)
+			}
+			if captured.Resolution != tc.want {
+				t.Errorf("captured resolution = %q, want %q", captured.Resolution, tc.want)
+			}
+		})
+	}
 }
 
 // TestReframeVideoResultForwardFeedsAttachment verifies the reframe result

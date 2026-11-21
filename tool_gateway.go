@@ -1114,8 +1114,14 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			// inline — the branches below replace req.Video with a hosted URL
 			// whose bytes are no longer local. Fail-soft: an unparseable
 			// source disables the guard and falls back to the rendered clip
-			// for billing, the same rule as pricing.
+			// for billing, the same rule as pricing. The seconds ride the
+			// request so the resolvers can refuse a clip outside the video
+			// input's own documented window before any money moves (the
+			// character-replace rule).
 			sourceSeconds, sourceReadable := falVideoSourceSeconds([]string{req.Video})
+			if sourceReadable {
+				req.SourceSeconds = sourceSeconds
+			}
 			// Reframe follows the video provider: replicate routes there, every
 			// other provider stays on fal — the same seam generate_video reads.
 			if videoGenerationProvider(config) == "replicate" {
