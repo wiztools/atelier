@@ -499,7 +499,9 @@ export function compositionRulerStepSeconds(scale: number): number {
 
 // compositionRulerTickStops lists the ruler's tick times: every step multiple
 // inside the extent plus the extent itself — the end always rides, it names
-// the total (today's last tick does the same, edge-crowding and all).
+// the total. A step tick closer to the end than the readable spacing yields
+// to it (a 40.3s project's 0:40.0 label otherwise printed over 0:40.3); the
+// zero tick never yields, so a very short project still shows its start.
 export function compositionRulerTickStops(scale: number, extentSeconds: number): number[] {
   const step = compositionRulerStepSeconds(scale);
   const stops: number[] = [];
@@ -508,6 +510,10 @@ export function compositionRulerTickStops(scale: number, extentSeconds: number):
   }
   const end = Math.round(extentSeconds * 1000) / 1000;
   if (stops[stops.length - 1] !== end) {
+    const last = stops[stops.length - 1];
+    if (stops.length > 1 && (end - last) * scale < compositionRulerMinTickPx) {
+      stops.pop();
+    }
     stops.push(end);
   }
   return stops;

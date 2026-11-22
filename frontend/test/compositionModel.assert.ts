@@ -367,7 +367,10 @@ assert(compositionRulerStepSeconds(10) === 10, 'the floor scale picks 10s ticks'
 assert(compositionRulerStepSeconds(300) === 1, 'a zoomed-in short project picks 1s ticks');
 assert(compositionRulerStepSeconds(0.1) === 1200, 'an absurd scale falls to the first readable house step');
 const fitStops = compositionRulerTickStops(22.08, 40.3);
-assert(fitStops.length === 10 && fitStops[0] === 0 && fitStops[9] === 40.3, 'a 40.3s fit timeline ticks every 5s and names its end');
+assert(fitStops.join() === '0,5,10,15,20,25,30,35,40.3', 'a 40.3s fit timeline ticks every 5s and names its end, the crowded 0:40.0 yielding to it');
+assert(compositionRulerTickStops(22.08, 44).join() === '0,5,10,15,20,25,30,35,40,44', 'a step tick a readable distance (4s × 22px ≥ 80px) from the end keeps its label');
+assert(compositionRulerTickStops(22.08, 43).join() === '0,5,10,15,20,25,30,35,43', 'a step tick just under the readable distance (3s × 22px) yields to the end');
+assert(compositionRulerTickStops(300, 0.5).join() === '0,0.5', 'the zero tick never yields, even when the end crowds it');
 assert(compositionRulerTickStops(12, 120).join() === '0,10,20,30,40,50,60,70,80,90,100,110,120', 'an exact-multiple extent ticks to its end without a duplicate');
 assert(compositionRulerTickStops(10, 1800).length === 181, 'an hour-plus mix ticks every 10s across its scrolled width');
 
