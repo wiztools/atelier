@@ -469,6 +469,50 @@ export function audioOverhangSeconds(doc: CompositionDoc): number {
   return Math.max(0, compositionAudioExtent(doc) - compositionSequenceDuration(doc));
 }
 
+// compositionTimelineMinPxPerSecond is the readable floor for the timeline's
+// horizontal scale: the track fits its extent (viewport px per second) until
+// that would squeeze tiles below this, then the timeline scrolls horizontally
+// at the floor instead of shrinking further.
+export const compositionTimelineMinPxPerSecond = 10;
+
+// compositionTimelineScale is the timeline's px-per-second — fit-to-width
+// while the project is short, the readable floor once it is not. Display-only
+// math: the renderer works in seconds and never sees it.
+export function compositionTimelineScale(viewportTrackPx: number, extentSeconds: number): number {
+  if (viewportTrackPx <= 0 || extentSeconds <= 0) return compositionTimelineMinPxPerSecond;
+  return Math.max(viewportTrackPx / extentSeconds, compositionTimelineMinPxPerSecond);
+}
+
+const compositionRulerSteps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1200, 3600];
+const compositionRulerMinTickPx = 80;
+
+// compositionRulerStepSeconds picks the ruler's tick interval: the smallest
+// house step whose rendered width stays readable, so a scrolled timeline
+// keeps labels at sane distances (the fit-to-width era spaced seven fixed
+// ticks across whatever the width was).
+export function compositionRulerStepSeconds(scale: number): number {
+  for (const step of compositionRulerSteps) {
+    if (step * scale >= compositionRulerMinTickPx) return step;
+  }
+  return compositionRulerSteps[compositionRulerSteps.length - 1];
+}
+
+// compositionRulerTickStops lists the ruler's tick times: every step multiple
+// inside the extent plus the extent itself — the end always rides, it names
+// the total (today's last tick does the same, edge-crowding and all).
+export function compositionRulerTickStops(scale: number, extentSeconds: number): number[] {
+  const step = compositionRulerStepSeconds(scale);
+  const stops: number[] = [];
+  for (let at = 0; at < extentSeconds; at += step) {
+    stops.push(Math.round(at * 1000) / 1000);
+  }
+  const end = Math.round(extentSeconds * 1000) / 1000;
+  if (stops[stops.length - 1] !== end) {
+    stops.push(end);
+  }
+  return stops;
+}
+
 // transitionBounds is what a junction's dissolve may be: at least the minimum,
 // at most the shorter neighboring clip's half (capped by the global max).
 // Null when there is no next clip or the neighbors cannot hold even the

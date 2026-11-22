@@ -17,7 +17,11 @@ import {
   compositionPreviewRange,
   compositionPreviewTakesStage,
   compositionProblems,
+  compositionRulerStepSeconds,
+  compositionRulerTickStops,
   compositionSequenceDuration,
+  compositionTimelineMinPxPerSecond,
+  compositionTimelineScale,
   compositionStillDefaultSeconds,
   compositionStillFrameMaxEdge,
   compositionStillMaxSeconds,
@@ -347,5 +351,24 @@ assert(act({skipKey: 'k1'}) === 'render', 'an older give-up does not block a new
 assert(act({running: {mode: 'preview', previewKey: 'k2'}}) === 'none', 'a render of this timeline under way is enough');
 assert(act({running: {mode: 'preview', previewKey: 'k1'}}) === 'render', 'a render of an older timeline is replaced');
 assert(act({running: {mode: 'export', previewKey: ''}}) === 'none', 'an export is never replaced — auto-update waits');
+
+// The timeline's horizontal scale fits the viewport until the readable
+// floor, then scrolls at the floor — a short project never scrolls, a long
+// one never squeezes below it.
+assert(compositionTimelineScale(890, 40.3) === 890 / 40.3, 'a short project scales to fit the viewport exactly');
+assert(compositionTimelineScale(890, 120) === compositionTimelineMinPxPerSecond, 'a long project clamps to the readable floor and scrolls');
+assert(compositionTimelineScale(890, 89) === 10 && compositionTimelineScale(890, 89.0001) === compositionTimelineMinPxPerSecond, 'the floor takes over exactly at the crossover');
+assert(compositionTimelineScale(0, 40.3) === compositionTimelineMinPxPerSecond && compositionTimelineScale(890, 0) === compositionTimelineMinPxPerSecond, 'unmeasurable inputs fall to the floor, not NaN');
+
+// The ruler's tick interval stays readable at any scale, and the stops span
+// the extent with the end always riding (it names the total).
+assert(compositionRulerStepSeconds(22.08) === 5, 'the fit-scale era picks 5s ticks (5 × 22 ≥ 80px)');
+assert(compositionRulerStepSeconds(10) === 10, 'the floor scale picks 10s ticks');
+assert(compositionRulerStepSeconds(300) === 1, 'a zoomed-in short project picks 1s ticks');
+assert(compositionRulerStepSeconds(0.1) === 1200, 'an absurd scale falls to the first readable house step');
+const fitStops = compositionRulerTickStops(22.08, 40.3);
+assert(fitStops.length === 10 && fitStops[0] === 0 && fitStops[9] === 40.3, 'a 40.3s fit timeline ticks every 5s and names its end');
+assert(compositionRulerTickStops(12, 120).join() === '0,10,20,30,40,50,60,70,80,90,100,110,120', 'an exact-multiple extent ticks to its end without a duplicate');
+assert(compositionRulerTickStops(10, 1800).length === 181, 'an hour-plus mix ticks every 10s across its scrolled width');
 
 console.log('composition model assertions passed');

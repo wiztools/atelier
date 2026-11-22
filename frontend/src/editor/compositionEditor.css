@@ -83,38 +83,61 @@
 }
 
 .composition-timeline-body {
-  /* Anchors the playhead: the line spans the ruler and the lanes only,
-     never the transport controls row above. */
-  position: relative;
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
 }
 
 .composition-lane-scroll {
+  /* One scroll container for the whole time axis: lanes stack vertically,
+     and once the scale floor kicks in the ruler, lanes, and playhead
+     scroll horizontally together. */
   flex: 1 1 auto;
   min-height: 0;
-  overflow-y: auto;
+  overflow: auto;
+}
+
+.composition-scroll-content {
+  /* The scrolled time axis. position anchors the playhead; min-width keeps
+     a short project stretched across the container while an over-long one
+     sizes to its px track (the children carry explicit widths). */
+  position: relative;
+  min-width: 100%;
+  width: max-content;
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
 .composition-ruler {
-  position: relative;
+  /* The pinned time header: sticky top keeps it over the lanes while they
+     scroll vertically, and the padding-bottom covers the flex gap so a
+     moving lane never shows through behind it. The sticky-left gutter
+     rides the measured label column (the editor sets its flex-basis from
+     the track's layout offset), so the ticks sit over the shared track
+     geometry at any scale. */
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
   height: 16px;
-  /* Indented by the video lane's own column — the lane's 1px border, its
-     label (a 28px content-box flex basis + 8px horizontal padding = 36px
-     wide) and the 8px gap — so ticks sit over the shared track geometry
-     every lane (and the playhead) uses; the 1px right margin keeps the
-     ruler's width equal to the track's, so percentage positions match at
-     both ends. */
-  margin: 0 1px 0 45px;
+  padding-bottom: 6px;
+  background: #23272a;
   font-size: 10px;
   color: #7d8488;
   cursor: pointer;
+}
+
+.composition-ruler-gutter {
+  position: sticky;
+  left: 0;
+  flex: 0 0 auto;
+}
+
+.composition-ruler-strip {
+  position: relative;
+  flex: none;
 }
 
 .composition-playhead {
@@ -146,24 +169,37 @@
 .composition-lane-video {
   min-height: 60px;
   background: #1b1f22;
-  border: 1px solid #3b3f42;
+  /* Outlines, not borders: they draw inside the box without taking layout
+     space, so a lane's total width is exactly label + track — the same
+     span the ruler's gutter + strip covers — and the fit-to-width scale
+     never overflows the scroll container by a border pixel. */
+  outline: 1px solid #3b3f42;
+  outline-offset: -1px;
 }
 
 .composition-lane-video.focused {
-  border-color: #55606a;
+  outline-color: #55606a;
 }
 
 .composition-lane-audio {
   background: #1e2225;
-  border: 1px solid #33383c;
+  outline: 1px solid #33383c;
+  outline-offset: -1px;
 }
 
 .composition-lane-audio.selected {
-  border-color: #4a90d9;
+  outline-color: #4a90d9;
 }
 
 .composition-lane-label {
-  /* Icon-wide in a video project; audio-first widens it for the name. */
+  /* Icon-wide in a video project; audio-first widens it for the name.
+     Sticky left keeps the column over the scrollport while clips scroll
+     beneath; background: inherit takes the owning lane's, and z-index 4
+     covers the tiles (z 3) and stays under the playhead (z 5). */
+  position: sticky;
+  left: 0;
+  z-index: 4;
+  background: inherit;
   flex: 0 0 28px;
   display: flex;
   align-items: center;
@@ -183,7 +219,9 @@
 
 .composition-lane-track {
   position: relative;
-  flex: 1;
+  /* The width rides the editor's inline style (the px time axis); a grow
+     flex would let the lane's stretch override it. */
+  flex: 0 0 auto;
 }
 
 .composition-lane-empty {
@@ -860,10 +898,10 @@
 }
 
 /* Audio-first presentation: an audio-only document reads as an audio
-   project — wider lane headers (track-header style, with the ruler margin
-   matching label + padding + gap + lane border), a slim ghosted video lane,
-   per-lane mute. The playhead and seeking read the track's live geometry,
-   so only the ruler's static margin needs the widened column. */
+   project — wider lane headers (track-header style, with the name and a
+   per-lane mute), a slim ghosted video lane, per-lane mute. The playhead,
+   seeking, and the ruler's gutter all read the track's measured geometry,
+   so the widened column needs no static mirror anywhere. */
 
 .composition-editor.audio-first .composition-lane-label {
   flex-basis: 128px;
@@ -872,15 +910,10 @@
   gap: 4px;
 }
 
-.composition-editor.audio-first .composition-ruler {
-  /* label (128px content-box basis + 16px padding) + gap + lane border. */
-  margin-left: 153px;
-}
-
 .composition-lane-video.audio-first {
   min-height: 30px;
   background: transparent;
-  border-style: dashed;
+  outline-style: dashed;
 }
 
 .composition-lane-name {
