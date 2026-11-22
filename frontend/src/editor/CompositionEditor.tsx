@@ -865,6 +865,25 @@ export function CompositionEditor(props: {
       cancelAnimationFrame(playheadLoopRef.current);
     }
   }, []);
+  // The line's left is measured in px, so without a media event it never
+  // leaves the box's left edge (where an unset left drops an abspos child),
+  // and a window or panel resize while paused leaves it stale — the rAF
+  // loop only runs during playback. Reposition on mount/extent changes and
+  // on track resizes.
+  const updatePlayheadRef = useRef(updatePlayhead);
+  updatePlayheadRef.current = updatePlayhead;
+  useEffect(() => {
+    updatePlayheadRef.current();
+  }, [preview, timelineExtent]);
+  useEffect(() => {
+    const track = laneElementRef.current;
+    if (!track || typeof ResizeObserver === 'undefined') {
+      return;
+    }
+    const observer = new ResizeObserver(() => updatePlayheadRef.current());
+    observer.observe(track);
+    return () => observer.disconnect();
+  }, []);
   const seekFromPointer = (clientX: number) => {
     const media = previewMediaRef.current;
     const track = laneElementRef.current;
@@ -1650,140 +1669,144 @@ export function CompositionEditor(props: {
                 onSeek={seekTransport}
               />
             ) : null}
-            <div className="composition-ruler" title="Click to move the playhead" onClick={(event) => seekFromPointer(event.clientX)}>
-              {Array.from({length: 7}, (_, index) => {
-                const at = (timelineExtent * index) / 6;
-                return <span key={index} style={{left: pct(at)}}>{formatCompositionClock(at)}</span>;
-              })}
-            </div>
-            {/* The lanes scroll under the pinned ruler — the timeline box
-                itself stays bounded by the editor body. */}
-            <div className="composition-lane-scroll">
-            <div
-              className={`composition-lane composition-lane-video${audioOnly ? ' audio-first' : ''}${selection.kind === 'doc' ? ' focused' : ''}`}
-              onClick={(event) => {
-                if (suppressLaneClickRef.current) {
-                  suppressLaneClickRef.current = false;
-                  return;
-                }
-                // An empty-lane click moves the playhead there, FCP-style,
-                // and clears to the project view.
-                seekFromPointer(event.clientX);
-                setSelection({kind: 'doc'});
-              }}
-            >
-              {/* Every lane shares the label + track geometry, so clips,
-                  segments, the ruler, and the playhead share one time axis. */}
-              <span className="composition-lane-label" title="Video" role="img" aria-label="Video"><FilmIcon /></span>
-              <div className="composition-lane-track" ref={laneElementRef}>
-              {doc.video.map((clip, index) => {
-                const missing = missingRefs.has(clip.ref.artifactId);
-                const still = isStillClip(clip);
-                const refURL = compositionRefURL(clip.ref);
-                // The junction pill straddles the seam — about half its fixed
-                // width onto each side — so a fixed pad keeps the tile's label
-                // clear of it at any zoom (percent padding would track the
-                // track's width, not the pill's).
-                const prevClip = index > 0 ? doc.video[index - 1] : undefined;
-                const nextClip = doc.video[index + 1];
-                return (
-                  <button
-                    key={clip.id}
-                    type="button"
-                    className={`composition-clip${still ? ' still' : ''}${selection.kind === 'clip' && selection.clipID === clip.id ? ' selected' : ''}${missing ? ' missing' : ''}${clip.audio.muted ? ' audio-muted' : ''}${clip.audio.detached ? ' audio-detached' : ''}${drag?.kind === 'clip-move' && drag.clipID === clip.id ? ' dragging' : ''}`}
-                    style={{left: pct(layout.starts[index]), width: pct(clipDurationSeconds(clip)), paddingLeft: prevClip?.transitionToNext ? '20px' : undefined, paddingRight: nextClip?.transitionToNext ? '20px' : undefined}}
-                    title={`${clip.ref.artifactId}${still ? ' · still' : ''} · ${formatCompositionClock(clipDurationSeconds(clip))}${missing ? ' · source file missing' : ''}\nDrag to reorder · drag an edge to ${still ? 'resize' : 'trim'} · select to edit`}
-                    onPointerDown={(event) => beginClipDrag(event, clip, index)}
-                  >
-                    {still && refURL && !missing ? (
-                      <span className="composition-clip-thumb" aria-hidden="true"><img src={refURL} alt="" loading="lazy" draggable={false} /></span>
-                    ) : null}
-                    <span className="composition-clip-name">{clip.ref.artifactId.slice(0, 12)}</span>
-                    <span className="composition-clip-duration">{formatCompositionClock(clipDurationSeconds(clip))}</span>
-                  </button>
-                );
-              })}
-              {doc.video.slice(0, -1).map((clip, index) => {
-                const junctionAt = layout.starts[index + 1];
-                const transition = clip.transitionToNext;
-                return (
-                  <button
-                    key={`junction-${clip.id}`}
-                    type="button"
-                    className={`composition-junction${transition ? ' dissolve' : ' cut'}${selection.kind === 'junction' && selection.clipID === clip.id ? ' selected' : ''}`}
-                    style={{left: pct(junctionAt), width: transition ? pct(transition.seconds) : '3px'}}
-                    title={transition
-                      ? `${transition.kind} ${transition.seconds.toFixed(1)}s (audio ${transition.audioCrossfade ? 'crossfades' : 'cuts'}) — drag to resize, drag fully left for a cut`
-                      : 'Cut — drag right to create a transition, or pick one in the inspector'}
-                    onPointerDown={(event) => beginJunctionDrag(event, clip)}
-                  >
-                    {transition ? (
-                      <span className="composition-junction-pill">{transition.seconds.toFixed(1)}s</span>
-                    ) : null}
-                  </button>
-                );
-              })}
-              {doc.video.length === 0 ? <span className="composition-lane-empty">{audioOnly ? 'Audio-only project — a video or image added from the picker opens its lane here.' : 'No clips — add videos or images from the picker.'}</span> : null}
+            {/* The body anchors the playhead: the line spans the ruler and
+                the lanes, never the transport controls row above. */}
+            <div className="composition-timeline-body">
+              <div className="composition-ruler" title="Click to move the playhead" onClick={(event) => seekFromPointer(event.clientX)}>
+                {Array.from({length: 7}, (_, index) => {
+                  const at = (timelineExtent * index) / 6;
+                  return <span key={index} style={{left: pct(at)}}>{formatCompositionClock(at)}</span>;
+                })}
               </div>
-            </div>
-            {doc.audioLanes.map((lane) => (
+              {/* The lanes scroll under the pinned ruler — the timeline box
+                  itself stays bounded by the editor body. */}
+              <div className="composition-lane-scroll">
               <div
-                key={lane.id}
-                className={`composition-lane composition-lane-audio${selection.kind === 'lane' && selection.laneID === lane.id ? ' selected' : ''}${lane.muted ? ' muted' : ''}`}
+                className={`composition-lane composition-lane-video${audioOnly ? ' audio-first' : ''}${selection.kind === 'doc' ? ' focused' : ''}`}
                 onClick={(event) => {
                   if (suppressLaneClickRef.current) {
                     suppressLaneClickRef.current = false;
                     return;
                   }
+                  // An empty-lane click moves the playhead there, FCP-style,
+                  // and clears to the project view.
                   seekFromPointer(event.clientX);
-                  setSelection({kind: 'lane', laneID: lane.id});
+                  setSelection({kind: 'doc'});
                 }}
               >
-                {/* A video project shows only the kind icon (the name rides
-                    the title and the inspector); the audio-first track
-                    headers have the width for the name and mute button. */}
-                <span className="composition-lane-label" title={`${lane.name}${lane.gainDb !== 0 ? ` ${lane.gainDb > 0 ? '+' : ''}${lane.gainDb}dB` : ''}${lane.muted ? ' (muted)' : ''}`} role={audioOnly ? undefined : 'img'} aria-label={audioOnly ? undefined : lane.name}>
-                  {audioOnly ? (
-                    <span className="composition-lane-name">{lane.name}{lane.gainDb !== 0 ? ` ${lane.gainDb > 0 ? '+' : ''}${lane.gainDb}dB` : ''}</span>
-                  ) : (
-                    <MusicIcon />
-                  )}
-                  {audioOnly ? (
+                {/* Every lane shares the label + track geometry, so clips,
+                    segments, the ruler, and the playhead share one time axis. */}
+                <span className="composition-lane-label" title="Video" role="img" aria-label="Video"><FilmIcon /></span>
+                <div className="composition-lane-track" ref={laneElementRef}>
+                {doc.video.map((clip, index) => {
+                  const missing = missingRefs.has(clip.ref.artifactId);
+                  const still = isStillClip(clip);
+                  const refURL = compositionRefURL(clip.ref);
+                  // The junction pill straddles the seam — about half its fixed
+                  // width onto each side — so a fixed pad keeps the tile's label
+                  // clear of it at any zoom (percent padding would track the
+                  // track's width, not the pill's).
+                  const prevClip = index > 0 ? doc.video[index - 1] : undefined;
+                  const nextClip = doc.video[index + 1];
+                  return (
                     <button
+                      key={clip.id}
                       type="button"
-                      className={`composition-lane-mute${lane.muted ? ' on' : ''}`}
-                      title={lane.muted ? 'Unmute this lane in the mix' : 'Mute this lane in the mix'}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        commit(setLaneMix(docRef.current, lane.id, {muted: !lane.muted}));
-                      }}
+                      className={`composition-clip${still ? ' still' : ''}${selection.kind === 'clip' && selection.clipID === clip.id ? ' selected' : ''}${missing ? ' missing' : ''}${clip.audio.muted ? ' audio-muted' : ''}${clip.audio.detached ? ' audio-detached' : ''}${drag?.kind === 'clip-move' && drag.clipID === clip.id ? ' dragging' : ''}`}
+                      style={{left: pct(layout.starts[index]), width: pct(clipDurationSeconds(clip)), paddingLeft: prevClip?.transitionToNext ? '20px' : undefined, paddingRight: nextClip?.transitionToNext ? '20px' : undefined}}
+                      title={`${clip.ref.artifactId}${still ? ' · still' : ''} · ${formatCompositionClock(clipDurationSeconds(clip))}${missing ? ' · source file missing' : ''}\nDrag to reorder · drag an edge to ${still ? 'resize' : 'trim'} · select to edit`}
+                      onPointerDown={(event) => beginClipDrag(event, clip, index)}
                     >
-                      M
+                      {still && refURL && !missing ? (
+                        <span className="composition-clip-thumb" aria-hidden="true"><img src={refURL} alt="" loading="lazy" draggable={false} /></span>
+                      ) : null}
+                      <span className="composition-clip-name">{clip.ref.artifactId.slice(0, 12)}</span>
+                      <span className="composition-clip-duration">{formatCompositionClock(clipDurationSeconds(clip))}</span>
                     </button>
-                  ) : null}
-                </span>
-                <div className="composition-lane-track">
-                  {lane.segments.map((segment) => (
+                  );
+                })}
+                {doc.video.slice(0, -1).map((clip, index) => {
+                  const junctionAt = layout.starts[index + 1];
+                  const transition = clip.transitionToNext;
+                  return (
                     <button
-                      key={segment.id}
+                      key={`junction-${clip.id}`}
                       type="button"
-                      className={`composition-segment${selection.kind === 'segment' && selection.segmentID === segment.id ? ' selected' : ''}${missingRefs.has(segment.ref.artifactId) ? ' missing' : ''}${segment.ducks.length ? ' ducked' : ''}`}
-                      style={{left: pct(segment.startSeconds), width: pct(segmentDurationSeconds(segment))}}
-                      title={`${segment.ref.artifactId} · ${formatCompositionClock(segmentDurationSeconds(segment))}${segment.ducks.length ? ` · ${segment.ducks.length} duck${segment.ducks.length === 1 ? '' : 's'}` : ''}\nDrag to move · drag an edge to trim · select to edit`}
-                      onPointerDown={(event) => beginSegmentDrag(event, segment)}
+                      className={`composition-junction${transition ? ' dissolve' : ' cut'}${selection.kind === 'junction' && selection.clipID === clip.id ? ' selected' : ''}`}
+                      style={{left: pct(junctionAt), width: transition ? pct(transition.seconds) : '3px'}}
+                      title={transition
+                        ? `${transition.kind} ${transition.seconds.toFixed(1)}s (audio ${transition.audioCrossfade ? 'crossfades' : 'cuts'}) — drag to resize, drag fully left for a cut`
+                        : 'Cut — drag right to create a transition, or pick one in the inspector'}
+                      onPointerDown={(event) => beginJunctionDrag(event, clip)}
                     >
-                      <SegmentWaveform segment={segment} />
-                      {segment.ref.artifactId.slice(0, 10)}
+                      {transition ? (
+                        <span className="composition-junction-pill">{transition.seconds.toFixed(1)}s</span>
+                      ) : null}
                     </button>
-                  ))}
+                  );
+                })}
+                {doc.video.length === 0 ? <span className="composition-lane-empty">{audioOnly ? 'Audio-only project — a video or image added from the picker opens its lane here.' : 'No clips — add videos or images from the picker.'}</span> : null}
                 </div>
               </div>
-            ))}
+              {doc.audioLanes.map((lane) => (
+                <div
+                  key={lane.id}
+                  className={`composition-lane composition-lane-audio${selection.kind === 'lane' && selection.laneID === lane.id ? ' selected' : ''}${lane.muted ? ' muted' : ''}`}
+                  onClick={(event) => {
+                    if (suppressLaneClickRef.current) {
+                      suppressLaneClickRef.current = false;
+                      return;
+                    }
+                    seekFromPointer(event.clientX);
+                    setSelection({kind: 'lane', laneID: lane.id});
+                  }}
+                >
+                  {/* A video project shows only the kind icon (the name rides
+                      the title and the inspector); the audio-first track
+                      headers have the width for the name and mute button. */}
+                  <span className="composition-lane-label" title={`${lane.name}${lane.gainDb !== 0 ? ` ${lane.gainDb > 0 ? '+' : ''}${lane.gainDb}dB` : ''}${lane.muted ? ' (muted)' : ''}`} role={audioOnly ? undefined : 'img'} aria-label={audioOnly ? undefined : lane.name}>
+                    {audioOnly ? (
+                      <span className="composition-lane-name">{lane.name}{lane.gainDb !== 0 ? ` ${lane.gainDb > 0 ? '+' : ''}${lane.gainDb}dB` : ''}</span>
+                    ) : (
+                      <MusicIcon />
+                    )}
+                    {audioOnly ? (
+                      <button
+                        type="button"
+                        className={`composition-lane-mute${lane.muted ? ' on' : ''}`}
+                        title={lane.muted ? 'Unmute this lane in the mix' : 'Mute this lane in the mix'}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          commit(setLaneMix(docRef.current, lane.id, {muted: !lane.muted}));
+                        }}
+                      >
+                        M
+                      </button>
+                    ) : null}
+                  </span>
+                  <div className="composition-lane-track">
+                    {lane.segments.map((segment) => (
+                      <button
+                        key={segment.id}
+                        type="button"
+                        className={`composition-segment${selection.kind === 'segment' && selection.segmentID === segment.id ? ' selected' : ''}${missingRefs.has(segment.ref.artifactId) ? ' missing' : ''}${segment.ducks.length ? ' ducked' : ''}`}
+                        style={{left: pct(segment.startSeconds), width: pct(segmentDurationSeconds(segment))}}
+                        title={`${segment.ref.artifactId} · ${formatCompositionClock(segmentDurationSeconds(segment))}${segment.ducks.length ? ` · ${segment.ducks.length} duck${segment.ducks.length === 1 ? '' : 's'}` : ''}\nDrag to move · drag an edge to trim · select to edit`}
+                        onPointerDown={(event) => beginSegmentDrag(event, segment)}
+                      >
+                        <SegmentWaveform segment={segment} />
+                        {segment.ref.artifactId.slice(0, 10)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              </div>
+              {/* The playhead rides the preview player's position (left set
+                  imperatively); pointer-events none so it never blocks the
+                  lanes beneath it. */}
+              {preview ? <div className="composition-playhead" ref={playheadRef} aria-hidden="true" /> : null}
             </div>
-            {/* The playhead rides the preview player's position (left set
-                imperatively); pointer-events none so it never blocks the
-                lanes beneath it. */}
-            {preview ? <div className="composition-playhead" ref={playheadRef} aria-hidden="true" /> : null}
           </div>
         </div>
 

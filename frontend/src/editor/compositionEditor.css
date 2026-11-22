@@ -82,6 +82,17 @@
   background: #23272a;
 }
 
+.composition-timeline-body {
+  /* Anchors the playhead: the line spans the ruler and the lanes only,
+     never the transport controls row above. */
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .composition-lane-scroll {
   flex: 1 1 auto;
   min-height: 0;
@@ -94,9 +105,13 @@
 .composition-ruler {
   position: relative;
   height: 16px;
-  /* Indented by the lane-label column + gap, so ticks sit over the shared
-     track geometry every lane (and the playhead) uses. */
-  margin-left: 36px;
+  /* Indented by the video lane's own column — the lane's 1px border, its
+     label (a 28px content-box flex basis + 8px horizontal padding = 36px
+     wide) and the 8px gap — so ticks sit over the shared track geometry
+     every lane (and the playhead) uses; the 1px right margin keeps the
+     ruler's width equal to the track's, so percentage positions match at
+     both ends. */
+  margin: 0 1px 0 45px;
   font-size: 10px;
   color: #7d8488;
   cursor: pointer;
@@ -104,8 +119,8 @@
 
 .composition-playhead {
   position: absolute;
-  top: 4px;
-  bottom: 6px;
+  top: 0;
+  bottom: 0;
   width: 2px;
   margin-left: -1px;
   background: #f2c94c;
@@ -846,9 +861,9 @@
 
 /* Audio-first presentation: an audio-only document reads as an audio
    project — wider lane headers (track-header style, with the ruler margin
-   matching label + gap), a slim ghosted video lane, per-lane mute. The
-   playhead and seeking read the track's live geometry, so only the ruler's
-   static margin needs the widened column. */
+   matching label + padding + gap + lane border), a slim ghosted video lane,
+   per-lane mute. The playhead and seeking read the track's live geometry,
+   so only the ruler's static margin needs the widened column. */
 
 .composition-editor.audio-first .composition-lane-label {
   flex-basis: 128px;
@@ -858,7 +873,8 @@
 }
 
 .composition-editor.audio-first .composition-ruler {
-  margin-left: 136px;
+  /* label (128px content-box basis + 16px padding) + gap + lane border. */
+  margin-left: 153px;
 }
 
 .composition-lane-video.audio-first {
