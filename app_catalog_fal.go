@@ -504,8 +504,9 @@ func (a *App) ListFalVideoUpscaleModels() ([]FalModel, error) {
 
 // isFalVideoReframeModel reports whether a fal catalog entry is a generative
 // video reframer — one that converts an attached clip to a new aspect ratio by
-// outpainting the added canvas (LTX-2.3 Reframe, Luma Ray 2 / Ray 3.2 reframe)
-// rather than cropping or upscaling it. fal files these under the broad
+// outpainting the added canvas (minimax/h3-max/reframe-video, LTX-2.3 Reframe,
+// Luma Ray 2 / Ray 3.2 reframe) rather than cropping or upscaling it. fal
+// files these under the broad
 // video-to-video category, so the id and tags are checked for "reframe" —
 // alongside the extend/lipsync/motion/upscale markers, the six predicates
 // partition video-to-video.

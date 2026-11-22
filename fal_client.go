@@ -59,14 +59,18 @@ const (
 	// whichever the configured endpoint declares.
 	defaultFalVideoUpscaleModel = "fal-ai/video-upscaler"
 	// defaultFalVideoReframeModel is the generative video-reframe endpoint used
-	// when none is configured — LTX-2.3 Reframe converts an attached clip to a
-	// new aspect ratio by outpainting the added canvas instead of cropping it
-	// (video_url + aspect_ratio + resolution, clips up to 60 seconds, billed per
-	// second of the input clip). Alternatives the picker surfaces: Luma Ray 2
-	// and Ray 3.2 reframe (more ratios, an optional prompt);
+	// when none is configured — MiniMax H3-Max Reframe converts an attached
+	// clip to a new aspect ratio by contain-fitting it onto the target canvas
+	// and outpainting the rest, timeline and audio preserved (required
+	// video_url + aspect_ratio enum [16:9 9:16 1:1 4:3 3:4 21:9 9:21], an
+	// optional resolution tier [480p 768p 1080p, default 768p], and an optional
+	// guidance prompt — unauthored, the endpoint captions the source itself;
+	// clips 0.25–300 seconds, billed per second of the input clip).
+	// Alternatives the picker surfaces: LTX-2.3 Reframe (five ratios, 720p/1080p)
+	// and Luma Ray 2 / Ray 3.2 reframe (a required prompt);
 	// resolveVideoReframeBody maps the canonical ratio/resolution onto whichever
 	// endpoint is configured.
-	defaultFalVideoReframeModel = "fal-ai/ltx-2.3/reframe"
+	defaultFalVideoReframeModel = "minimax/h3-max/reframe-video"
 	// defaultFalVideoRestyleModel is the video-restyle endpoint used when none is
 	// configured — Kling o3 video-to-video edit re-renders an attached clip
 	// under a prompt while keeping its motion: anime, claymation, a different

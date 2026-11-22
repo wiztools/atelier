@@ -543,6 +543,95 @@ func TestResolveVideoReframeBodyDurationWindow(t *testing.T) {
 	})
 }
 
+// minimaxReframeSchema parses the pinned minimax/h3-max/reframe-video fixture
+// — the fal default reframe endpoint, whose video_url description reads "0.25
+// to 300 seconds" (the range spelling the shared sourceDurationWindow reads)
+// and whose tier enum [480p 768p 1080p] holds no canonical 720p.
+func minimaxReframeSchema(t *testing.T) *ModelInputSchema {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("testdata", "fal-schemas", "minimax-h3-max-reframe-video.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	schema, err := parseModelInputSchema(raw)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	return schema
+}
+
+// TestResolveVideoReframeBodyMinimaxFixture drives the canonical reframe
+// request through the pinned fal default endpoint's schema: video, ratio, an
+// authored prompt, and a supported tier all bind; the optional-with-default
+// prompt input stays absent without the steer line (unlike Luma's required
+// one, the endpoint captions the source itself); a configured 720p degrades
+// with the unsupported-tier notice onto the model's own 768p default; and the
+// video input's own documented window refuses an over-ask naming split_video
+// while a clip exactly at the cap rides.
+func TestResolveVideoReframeBodyMinimaxFixture(t *testing.T) {
+	t.Run("maps video, ratio, authored prompt, and supported tier", func(t *testing.T) {
+		body, notices, err := resolveVideoReframeBody(minimaxReframeSchema(t),
+			VideoReframeRequest{Model: "minimax/h3-max/reframe-video", Video: "https://example.com/v.mp4", AspectRatio: "21:9", Resolution: "1080p", Prompt: "a city skyline behind them"},
+			builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("resolveVideoReframeBody error: %v", err)
+		}
+		if body["video_url"] != "https://example.com/v.mp4" || body["aspect_ratio"] != "21:9" || body["prompt"] != "a city skyline behind them" || body["resolution"] != "1080p" {
+			t.Fatalf("body = %v, want the four canonical inputs bound", body)
+		}
+		if len(notices) != 0 {
+			t.Fatalf("notices = %v, want none", notices)
+		}
+	})
+	t.Run("unauthored prompt stays absent — no steer line on an optional input", func(t *testing.T) {
+		body, notices, err := resolveVideoReframeBody(minimaxReframeSchema(t),
+			VideoReframeRequest{Model: "minimax/h3-max/reframe-video", Video: "https://example.com/v.mp4", AspectRatio: "9:16"},
+			builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("resolveVideoReframeBody error: %v", err)
+		}
+		if _, present := body["prompt"]; present {
+			t.Fatalf("body[prompt] = %v, want it omitted — the endpoint captions the source itself", body["prompt"])
+		}
+		if len(notices) != 0 {
+			t.Fatalf("notices = %v, want none", notices)
+		}
+	})
+	t.Run("configured 720p degrades with a notice onto the 768p default", func(t *testing.T) {
+		body, notices, err := resolveVideoReframeBody(minimaxReframeSchema(t),
+			VideoReframeRequest{Model: "minimax/h3-max/reframe-video", Video: "https://example.com/v.mp4", AspectRatio: "9:16", Resolution: "720p"},
+			builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("resolveVideoReframeBody error: %v", err)
+		}
+		if _, present := body["resolution"]; present {
+			t.Fatalf("body[resolution] = %v, want it omitted for the unsupported tier", body["resolution"])
+		}
+		if len(notices) != 1 || !strings.Contains(notices[0], "does not support resolution") {
+			t.Fatalf("notices = %v, want one unsupported-resolution notice", notices)
+		}
+	})
+	t.Run("over the documented 300s cap refuses naming split_video", func(t *testing.T) {
+		_, _, err := resolveVideoReframeBody(minimaxReframeSchema(t),
+			VideoReframeRequest{Model: "minimax/h3-max/reframe-video", Video: "https://example.com/v.mp4", AspectRatio: "9:16", SourceSeconds: 301},
+			builtinFalOverrides())
+		if err == nil || !strings.Contains(err.Error(), "accepts at most 300s") || !strings.Contains(err.Error(), "split_video") {
+			t.Fatalf("err = %v, want an up-front refusal naming the 300s cap and split_video", err)
+		}
+	})
+	t.Run("exactly at the 300s cap rides", func(t *testing.T) {
+		body, _, err := resolveVideoReframeBody(minimaxReframeSchema(t),
+			VideoReframeRequest{Model: "minimax/h3-max/reframe-video", Video: "https://example.com/v.mp4", AspectRatio: "9:16", SourceSeconds: 300},
+			builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("resolveVideoReframeBody error: %v — a clip at the documented cap must ride", err)
+		}
+		if body["video_url"] == nil {
+			t.Fatal("body must carry the source video")
+		}
+	})
+}
+
 // TestReframeVideoToolResolutionFallback pins the resolution precedence (the
 // generate_video tier rule): a call-stated tier wins, the configured
 // Generation.Video.Resolution default fills an omitted one, and an
