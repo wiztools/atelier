@@ -1846,12 +1846,15 @@ export function CompositionEditor(props: {
                     </div>
                   </div>
                 ))}
-                </div>
                 {/* The playhead rides the preview player's position (left set
                     imperatively); pointer-events none so it never blocks the
-                    lanes beneath it. It lives in the scroll content, so the
-                    line rides whatever the container's horizontal position is. */}
+                    lanes beneath it. It must stay a child of
+                    .composition-scroll-content (the position: relative anchor):
+                    anywhere else its top: 0 resolves against .composition-timeline
+                    and the line runs up over the transport row, and its
+                    parentElement-relative left stops being scroll-invariant. */}
                 {preview ? <div className="composition-playhead" ref={playheadRef} aria-hidden="true" /> : null}
+                </div>
                 </div>
             </div>
           </div>
