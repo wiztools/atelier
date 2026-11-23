@@ -1292,8 +1292,9 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 			// inputs.frameImages and two images auto-distribute to the first and
 			// last frames (Kling 4.0, the MiniMax H3 family), so a keyframe turn
 			// rides the image-to-video slot like any other frame turn, and the
-			// resolver holds the schema line — a pinned model whose inputs
-			// declare no frameImages fails before any money moves.
+			// resolver holds the schema line — a pinned model that cannot hold
+			// the pair (no frameImages, or a one-entry ceiling) fails before any
+			// money moves.
 			extendTurn := len(attachedVideos) > 0 && len(attachedImages) == 0 && videoRole != "reference"
 			if provider := videoGenerationProvider(tools.Config); provider == "runware" {
 				if len(attachedVideos) > 0 && !extendTurn {

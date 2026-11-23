@@ -118,10 +118,12 @@ func runwareSetInput(schema *ModelInputSchema, task map[string]any, key string, 
 // resolveRunwareVideoTask maps the canonical video request onto one
 // videoInference task. The executor has already refused the turns this
 // backend cannot serve (motion control, reference videos), so the resolver
-// sees exactly four shapes: text-to-video, image-to-video (the source frame
+// sees exactly five shapes: text-to-video, image-to-video (the source frame
 // lands on frameImages — one image auto-distributes to the first frame), a
 // keyframe transition (two images on frameImages, auto-distributed first and
-// last, schema-gated below), and an extend (the source clip on inputs.video).
+// last, schema-gated below on a model that holds the pair), a reference turn
+// (useVideoAs:"reference" — the images ride referenceImages, never the
+// opening frame), and an extend (the source clip on inputs.video).
 func resolveRunwareVideoTask(schema *ModelInputSchema, req VideoGenerateRequest) (map[string]any, []string, []string, error) {
 	task := runwareTaskBase("videoInference", req.Model)
 	var notices []string
@@ -168,21 +170,41 @@ func resolveRunwareVideoTask(schema *ModelInputSchema, req VideoGenerateRequest)
 			refs = append(refs, runwareImageRef(img))
 		}
 		nested := runwareInputsNested(schema)
-		// A keyframe transition is only honest on a model that anchors frames:
-		// without frameImages the two images would degrade onto referenceImages
-		// or image and the output would not start or end where the user's
-		// frames are. Fail before the submit — nothing has been paid yet.
-		if req.Keyframes && schema != nil && !hasKey(nested, "frameImages") {
-			return nil, nil, nil, fmt.Errorf("Runware model %q declares no start/end frame input (inputs.frameImages) and cannot drive a keyframe transition; pick a keyframe-capable model (Kling 4.0 and the MiniMax H3 family both take two) or switch Video Provider to fal.ai in Settings → Models", req.Model)
+		// A reference turn (useVideoAs:"reference") sends its images as
+		// guidance — characters, style, scenes — never as the clip's opening
+		// frame. The role went unread here, so one reference image landed on
+		// frameImages on every model declaring it and a character sheet became
+		// frame one.
+		reference := req.VideoRole == "reference"
+		// A keyframe transition is only honest on a model that anchors BOTH of
+		// the user's frames. Without frameImages the two images would degrade
+		// onto referenceImages or image and the output would not start or end
+		// where the user's frames are. With a one-entry ceiling the clamp
+		// below kept the opening frame and dropped the closing one on a paid
+		// generation — the first-frame-only packagings (Kling 4.0 Flash, Grok
+		// Imagine, Hailuo 2.3, Runway Gen-4.5, ...) sit in the same
+		// image-to-video picker. Either way, fail before the submit — nothing
+		// has been paid yet.
+		if req.Keyframes && schema != nil {
+			if prop, ok := nested["frameImages"]; !ok || prop.MaxItems == 1 {
+				gap := "declares no start/end frame input (inputs.frameImages)"
+				if ok {
+					gap = "takes only one frame image (inputs.frameImages caps at one entry — the first frame, never a last)"
+				}
+				return nil, nil, nil, fmt.Errorf("Runware model %q %s and cannot drive a keyframe transition; pick a keyframe-capable model (Kling 4.0 and the MiniMax H3 family both take two) or switch Video Provider to fal.ai in Settings → Models", req.Model, gap)
+			}
 		}
 		switch {
-		case schema != nil && hasKey(nested, "frameImages") && (len(refs) == 1 || req.Keyframes):
+		case schema != nil && hasKey(nested, "frameImages") && (req.Keyframes || (len(refs) == 1 && !reference)):
 			// One image auto-distributes to the first frame; two ride in order
 			// — the endpoint anchors refs[0] as the first frame and refs[1] as
 			// the last (the auto-distribution contract every frameImages
 			// packaging publishes), so the executor's openingFrame swap already
 			// oriented the pair, and plain strings need no model-specific
-			// {image, frame} tagging.
+			// {image, frame} tagging. A single image lands here only when the
+			// call names no reference role — that turn falls through to
+			// referenceImages — while a keyframe turn keeps its frames whatever
+			// role the call also carries: the flag is the specific statement.
 			if schema != nil {
 				if prop := nested["frameImages"]; prop.MaxItems > 0 && len(refs) > prop.MaxItems {
 					notices = append(notices, fmt.Sprintf("Runware model %q takes at most %d frame images; used the first %d.", req.Model, prop.MaxItems, prop.MaxItems))
@@ -204,6 +226,12 @@ func resolveRunwareVideoTask(schema *ModelInputSchema, req VideoGenerateRequest)
 			}
 			runwareSetInput(schema, task, "image", refs[0])
 		default:
+			// A reference turn on a frame-only model has nowhere honest to go:
+			// its frameImages IS the opening frame, exactly what the role said
+			// these images are not. Name that gap over the generic line.
+			if reference && schema != nil && hasKey(nested, "frameImages") {
+				return nil, nil, nil, fmt.Errorf("Runware model %q takes start frames only (inputs.frameImages) and declares no reference-image input (inputs.referenceImages), so it cannot use %d attached image(s) as references; pick a model that declares inputs.referenceImages (Kling 4.0, Seedance 2.0, and the MiniMax H3 family do) or switch Video Provider to fal.ai in Settings → Models", req.Model, len(refs))
+			}
 			return nil, nil, nil, fmt.Errorf("Runware model %q declares no image input this app can fill", req.Model)
 		}
 		diagnostics = append(diagnostics, fmt.Sprintf("runware: %d source image(s) mapped onto the model's declared image input", len(refs)))

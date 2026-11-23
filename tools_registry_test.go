@@ -809,6 +809,39 @@ func TestGenerateVideoKeyframesRouteOnRunware(t *testing.T) {
 		}
 	})
 
+	// A single image the planner marked as a reference reaches the resolver
+	// with its role intact: on this backend the role is what routes the image
+	// to referenceImages instead of the opening frame (runware_params.go).
+	t.Run("a reference turn forwards the role beside a single image", func(t *testing.T) {
+		config := defaultAppConfig()
+		config.Models.VideoProvider = "runware"
+		config.Providers.Runware.VideoImageModel = imageModel
+
+		var captured VideoGenerateRequest
+		def := videoGenerationToolDefinition(AppConfig{}, false)
+		exec := HarnessToolExecutionContext{
+			Config:         config,
+			AttachedImages: []string{firstFrame},
+			GenerateVideo: func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error) {
+				captured = req
+				return GeneratedVideo{Data: []byte("mp4"), MimeType: "video/mp4", SourceURL: "https://example.com/v.mp4"}, nil
+			},
+		}
+		call := HarnessToolCall{Name: "generate_video", Content: "this character walking through Paris", UseVideoAs: "reference"}
+		if _, _, err := def.Execute(context.Background(), exec, call); err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if captured.VideoRole != "reference" {
+			t.Fatalf("captured.VideoRole = %q, want the reference role forwarded", captured.VideoRole)
+		}
+		if captured.Keyframes {
+			t.Fatal("captured.Keyframes = true, want false on a one-image reference turn")
+		}
+		if captured.Model != imageModel {
+			t.Fatalf("captured.Model = %q, want the runware image-to-video slot %q", captured.Model, imageModel)
+		}
+	})
+
 	t.Run("motion and video references still refuse", func(t *testing.T) {
 		config := defaultAppConfig()
 		config.Models.VideoProvider = "runware"

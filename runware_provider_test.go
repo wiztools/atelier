@@ -66,7 +66,7 @@ const runwareSeedanceSchemaFixture = `{"components":{"schemas":{"RequestBody":{"
     "deliveryMethod":{"type":"string","enum":["sync","async"],"default":"async"},
     "includeCost":{"type":"boolean"},
     "inputs":{"type":"object","properties":{
-      "frameImages":{"type":"array","maxItems":10,"items":{"type":"string"}},
+      "frameImages":{"type":"array","maxItems":2,"items":{"type":"string"}},
       "video":{"type":"string"}}}
   },
   "allOf":[{"if":{"anyOf":[{"required":["width"]},{"required":["height"]}]},
@@ -95,7 +95,7 @@ const runwareH3FastSchemaFixture = `{"components":{"schemas":{"RequestBody":{"ty
     "deliveryMethod":{"type":"string","enum":["sync","async"],"default":"async"},
     "includeCost":{"type":"boolean"},
     "inputs":{"type":"object","properties":{
-      "frameImages":{"type":"array","maxItems":10,"items":{"type":"string"}},
+      "frameImages":{"type":"array","maxItems":2,"items":{"type":"string"}},
       "video":{"type":"string"}}}
   },
   "allOf":[{"if":{"anyOf":[{"required":["width"]},{"required":["height"]}]},
@@ -128,6 +128,70 @@ const runwareVeoSchemaFixture = `{"components":{"schemas":{"RequestBody":{"type"
       "frameImages":{"type":"array","maxItems":2,"items":{"type":"string"}},
       "video":{"type":"string"}}}
   }}}}}}`
+
+// runwareKlingFlashSchemaFixture trims the real klingai-video-4-0-flash
+// schema: the Kling 4.0 shape with the one difference that matters to the
+// keyframe gate — frameImages caps at maxItems 1 (the schema's own frame
+// object reads "This model only supports the first frame") beside
+// referenceImages maxItems 10, and no resolution dial (pixels only). It stands
+// in for the first-frame-only packagings (Grok Imagine, Hailuo 2.3, Runway
+// Gen-4.5, Wan 2.6, ...), every one of them tagged image-to-video and so
+// listed in the same Settings picker as Kling 4.0.
+const runwareKlingFlashSchemaFixture = `{"components":{"schemas":{"RequestBody":{"type":"array","items":{
+  "type":"object","additionalProperties":false,
+  "properties":{
+    "positivePrompt":{"type":"string"},
+    "duration":{"type":"integer","minimum":3,"maximum":20,"default":10},
+    "width":{"type":"integer"},"height":{"type":"integer"},
+    "outputFormat":{"type":"string","enum":["MP4","WEBM","MOV"]},
+    "deliveryMethod":{"type":"string","enum":["sync","async"],"default":"async"},
+    "includeCost":{"type":"boolean"},
+    "inputs":{"type":"object","properties":{
+      "frameImages":{"type":"array","maxItems":1,"items":{"type":"string"}},
+      "referenceImages":{"type":"array","maxItems":10,"items":{"type":"string"}},
+      "video":{"type":"string"}}}
+  },
+  "allOf":[{"if":{"anyOf":[{"required":["width"]},{"required":["height"]}]},
+   "then":{"oneOf":[
+     {"properties":{"width":{"const":1280},"height":{"const":720}}},
+     {"properties":{"width":{"const":960},"height":{"const":960}}},
+     {"properties":{"width":{"const":720},"height":{"const":1280}}},
+     {"properties":{"width":{"const":1464},"height":{"const":628}}}
+   ]}}]}}}}}`
+
+// runwareSeedance1ProSchemaFixture trims the real bytedance-seedance-1-0-pro
+// schema: inputs carries frameImages (maxItems 2) and nothing else — the
+// frame-only shape, which animates one image or transitions between two but
+// has no reference-image input to guide a clip with.
+const runwareSeedance1ProSchemaFixture = `{"components":{"schemas":{"RequestBody":{"type":"array","items":{
+  "type":"object","additionalProperties":false,
+  "properties":{
+    "positivePrompt":{"type":"string"},
+    "duration":{"type":"number","minimum":1.2,"maximum":12,"default":5},
+    "width":{"type":"integer"},"height":{"type":"integer"},
+    "resolution":{"type":"string","enum":["480p","1080p"]},
+    "deliveryMethod":{"type":"string","enum":["sync","async"],"default":"async"},
+    "includeCost":{"type":"boolean"},
+    "inputs":{"type":"object","properties":{
+      "frameImages":{"type":"array","maxItems":2,"items":{"type":"string"}}}}
+  },
+  "allOf":[{"if":{"anyOf":[{"required":["width"]},{"required":["height"]}]},
+   "then":{"oneOf":[
+     {"properties":{"width":{"const":416},"height":{"const":960}}},
+     {"properties":{"width":{"const":480},"height":{"const":864}}},
+     {"properties":{"width":{"const":544},"height":{"const":736}}},
+     {"properties":{"width":{"const":640},"height":{"const":640}}},
+     {"properties":{"width":{"const":736},"height":{"const":544}}},
+     {"properties":{"width":{"const":864},"height":{"const":480}}},
+     {"properties":{"width":{"const":928},"height":{"const":2176}}},
+     {"properties":{"width":{"const":960},"height":{"const":416}}},
+     {"properties":{"width":{"const":1088},"height":{"const":1920}}},
+     {"properties":{"width":{"const":1248},"height":{"const":1664}}},
+     {"properties":{"width":{"const":1440},"height":{"const":1440}}},
+     {"properties":{"width":{"const":1664},"height":{"const":1248}}},
+     {"properties":{"width":{"const":1920},"height":{"const":1088}}},
+     {"properties":{"width":{"const":2176},"height":{"const":928}}}
+   ]}}]}}}}}`
 
 // runwareSpeechSchemaFixture trims the real minimax-speech-2-8 schema: the
 // nested speech object with a voice enum, no emotion or speed dials, dataURI
@@ -535,6 +599,136 @@ func TestResolveRunwareVideoTaskKeyframes(t *testing.T) {
 	}
 	if len(clampNotices) == 0 || !strings.Contains(strings.Join(clampNotices, " "), "frame images") {
 		t.Fatalf("the clamp must say so, got %v", clampNotices)
+	}
+}
+
+// TestResolveRunwareVideoTaskKeyframesNeedTwoFrames pins the keyframe gate's
+// second arm: a model whose frameImages caps at one entry takes a first frame
+// but no last, so a transition refuses before the submit instead of riding the
+// maxItems clamp — which kept the opening frame, dropped the closing one, and
+// let the paid generation run as plain image-to-video. 23 of the 80 frameImages
+// packagings in the 2026-11 catalog are first-frame-only, and every one carries
+// the image-to-video tag that lists it in the Settings picker beside Kling 4.0.
+func TestResolveRunwareVideoTaskKeyframesNeedTwoFrames(t *testing.T) {
+	schema := parseRunwareFixture(t, runwareKlingFlashSchemaFixture)
+	task, notices, _, err := resolveRunwareVideoTask(schema, VideoGenerateRequest{
+		Model: "klingai:kling-video@4.0-flash", Prompt: "morph between the two", Keyframes: true,
+		Images: []string{"data:image/png;base64,QUJD", "data:image/png;base64,REVG"},
+	})
+	if err == nil || task != nil {
+		t.Fatalf("a transition on a one-frame model must refuse, got task %+v notices %v", task, notices)
+	}
+	for _, want := range []string{"keyframe", "one frame image", "Settings"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the refusal must name %q, got %v", want, err)
+		}
+	}
+
+	// The same model still animates one image: its ceiling is one, and one is
+	// exactly what a plain image-to-video turn sends.
+	task, _, _, err = resolveRunwareVideoTask(schema, VideoGenerateRequest{
+		Model: "klingai:kling-video@4.0-flash", Prompt: "animate",
+		Images: []string{"data:image/png;base64,QUJD"},
+	})
+	if err != nil {
+		t.Fatalf("single-frame i2v on a one-frame model: %v", err)
+	}
+	inputs, _ := task["inputs"].(map[string]any)
+	if frames, _ := inputs["frameImages"].([]string); len(frames) != 1 {
+		t.Fatalf("inputs.frameImages = %+v, want the single frame", inputs["frameImages"])
+	}
+}
+
+// TestResolveRunwareVideoTaskReferenceImages pins the reference route: a turn
+// the planner marked useVideoAs:"reference" rides inputs.referenceImages and
+// never the opening frame. The resolver read the role nowhere, so one
+// reference image landed on frameImages on every model declaring it and a
+// character sheet became frame one.
+func TestResolveRunwareVideoTaskReferenceImages(t *testing.T) {
+	schema := parseRunwareFixture(t, runwareKlingSchemaFixture)
+	const (
+		first  = "data:image/png;base64,QUJD"
+		second = "data:image/png;base64,REVG"
+	)
+
+	// One reference image rides referenceImages — the role wins over the
+	// one-image-is-the-opening-frame default.
+	task, notices, _, err := resolveRunwareVideoTask(schema, VideoGenerateRequest{
+		Model: "klingai:kling-video@4.0", Prompt: "this character walking through Paris",
+		VideoRole: "reference", Images: []string{first},
+	})
+	if err != nil {
+		t.Fatalf("resolve reference turn: %v", err)
+	}
+	inputs, _ := task["inputs"].(map[string]any)
+	if refs, _ := inputs["referenceImages"].([]string); len(refs) != 1 || refs[0] != first {
+		t.Fatalf("inputs.referenceImages = %+v, want the one reference", inputs["referenceImages"])
+	}
+	if _, ok := inputs["frameImages"]; ok {
+		t.Fatalf("a reference turn must not name a frame, got %+v", inputs)
+	}
+	if len(notices) != 0 {
+		t.Fatalf("a reference turn on a declared shape should be notice-free, got %v", notices)
+	}
+
+	// Without the role the same image is the opening frame — the default the
+	// tool describes (omit imageRole to animate a single attached image).
+	task, _, _, err = resolveRunwareVideoTask(schema, VideoGenerateRequest{
+		Model: "klingai:kling-video@4.0", Prompt: "animate", Images: []string{first},
+	})
+	if err != nil {
+		t.Fatalf("resolve plain i2v: %v", err)
+	}
+	inputs, _ = task["inputs"].(map[string]any)
+	if frames, _ := inputs["frameImages"].([]string); len(frames) != 1 || frames[0] != first {
+		t.Fatalf("inputs.frameImages = %+v, want the single opening frame", inputs["frameImages"])
+	}
+	if _, ok := inputs["referenceImages"]; ok {
+		t.Fatalf("a plain i2v turn must not name references, got %+v", inputs)
+	}
+
+	// A keyframe turn keeps its frames whatever role the call also carries:
+	// imageRole:"keyframes" is the specific statement, and the pair rides
+	// frameImages in order.
+	task, _, _, err = resolveRunwareVideoTask(schema, VideoGenerateRequest{
+		Model: "klingai:kling-video@4.0", Prompt: "morph", Keyframes: true, VideoRole: "reference",
+		Images: []string{first, second},
+	})
+	if err != nil {
+		t.Fatalf("resolve keyframes beside a reference role: %v", err)
+	}
+	inputs, _ = task["inputs"].(map[string]any)
+	if frames, _ := inputs["frameImages"].([]string); len(frames) != 2 || frames[0] != first || frames[1] != second {
+		t.Fatalf("inputs.frameImages = %+v, want the ordered pair", inputs["frameImages"])
+	}
+	if _, ok := inputs["referenceImages"]; ok {
+		t.Fatalf("a keyframe turn must not name references, got %+v", inputs)
+	}
+
+	// A frame-only model cannot take references: Seedance 1.0 Pro declares
+	// frameImages and nothing else, so the turn refuses naming the gap rather
+	// than quietly opening on an image the role said was guidance. One image or
+	// two, the refusal is the same.
+	frameOnly := parseRunwareFixture(t, runwareSeedance1ProSchemaFixture)
+	for _, tc := range []struct {
+		name   string
+		images []string
+		want   string
+	}{
+		{name: "one image", images: []string{first}, want: "1 attached image(s)"},
+		{name: "two images", images: []string{first, second}, want: "2 attached image(s)"},
+	} {
+		task, _, _, err = resolveRunwareVideoTask(frameOnly, VideoGenerateRequest{
+			Model: "bytedance:2@1", Prompt: "p", VideoRole: "reference", Images: tc.images,
+		})
+		if err == nil || task != nil {
+			t.Fatalf("%s: a reference turn on a frame-only model must refuse, got task %+v", tc.name, task)
+		}
+		for _, want := range []string{"reference", tc.want, "Settings"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("%s: the refusal must name %q, got %v", tc.name, want, err)
+			}
+		}
 	}
 }
 
