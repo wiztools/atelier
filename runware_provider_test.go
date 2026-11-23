@@ -732,6 +732,137 @@ func TestResolveRunwareVideoTaskReferenceImages(t *testing.T) {
 	}
 }
 
+// TestResolveRunwareVideoTaskReferenceAspect pins how a reference turn is
+// shaped. A reference image sets no orientation, so the turn takes the
+// text-to-video shape rule with its own aspect — the call's explicit ratio,
+// else the configured default, never the gateway's image-derived ratio — and
+// rides it as width/height presets (Runware documents resolution as unusable
+// beside them). With nothing to shape from, or on a model that takes no
+// pixels, the tier-alone image-turn rule stands, and the clip takes the
+// reference image's own shape.
+func TestResolveRunwareVideoTaskReferenceAspect(t *testing.T) {
+	schema := parseRunwareFixture(t, runwareKlingSchemaFixture)
+	const reference = "data:image/png;base64,QUJD"
+
+	for _, tc := range []struct {
+		name         string
+		req          VideoGenerateRequest
+		images       int
+		wantW, wantH int
+	}{
+		{
+			// The gateway derived 16:9 from a landscape reference sheet; the
+			// configured 9:16 is the standing preference and wins.
+			name:   "the configured default replaces the image-derived ratio",
+			req:    VideoGenerateRequest{AspectRatio: "16:9", ConfigAspectRatio: "9:16", Resolution: "1080p", VideoRole: "reference"},
+			images: 1, wantW: 1080, wantH: 1920,
+		},
+		{
+			name:   "an explicit ratio wins over the configured default",
+			req:    VideoGenerateRequest{AspectRatio: "16:9", AspectRatioExplicit: true, ConfigAspectRatio: "9:16", Resolution: "1080p", VideoRole: "reference"},
+			images: 1, wantW: 1920, wantH: 1080,
+		},
+		{
+			name:   "the configured tier steers the preset class",
+			req:    VideoGenerateRequest{AspectRatio: "16:9", AspectRatioExplicit: true, ConfigAspectRatio: "9:16", Resolution: "720p", VideoRole: "reference"},
+			images: 1, wantW: 1280, wantH: 720,
+		},
+		{
+			// Two images and no role is the executor's reference diagnosis too.
+			name:   "two images with no role are a reference turn",
+			req:    VideoGenerateRequest{AspectRatio: "16:9", ConfigAspectRatio: "9:16", Resolution: "1080p"},
+			images: 2, wantW: 1080, wantH: 1920,
+		},
+	} {
+		req := tc.req
+		req.Model, req.Prompt = "klingai:kling-video@4.0", "this character walking through Paris"
+		req.Images = make([]string, tc.images)
+		for i := range req.Images {
+			req.Images[i] = reference
+		}
+		task, notices, _, err := resolveRunwareVideoTask(schema, req)
+		if err != nil {
+			t.Fatalf("%s: resolve: %v", tc.name, err)
+		}
+		if task["width"] != tc.wantW || task["height"] != tc.wantH {
+			t.Fatalf("%s: size = %vx%v, want %dx%d from the aspect", tc.name, task["width"], task["height"], tc.wantW, tc.wantH)
+		}
+		if _, ok := task["resolution"]; ok {
+			t.Fatalf("%s: resolution must not ride beside width/height, got %+v", tc.name, task["resolution"])
+		}
+		if inputs, _ := task["inputs"].(map[string]any); len(inputs["referenceImages"].([]string)) != tc.images {
+			t.Fatalf("%s: the images must still ride referenceImages, got %+v", tc.name, task["inputs"])
+		}
+		if len(notices) != 0 {
+			t.Fatalf("%s: a shape the model offers should be notice-free, got %v", tc.name, notices)
+		}
+	}
+
+	// The config at "auto" leaves nothing to shape from: the tier rides alone
+	// as on any image turn, and Runware then matches the reference's shape.
+	task, notices, _, err := resolveRunwareVideoTask(schema, VideoGenerateRequest{
+		Model: "klingai:kling-video@4.0", Prompt: "p", VideoRole: "reference",
+		AspectRatio: "16:9", ConfigAspectRatio: "auto", Resolution: "1080p",
+		Images: []string{reference},
+	})
+	if err != nil {
+		t.Fatalf("resolve auto reference turn: %v", err)
+	}
+	if _, ok := task["width"]; ok {
+		t.Fatalf("no aspect to shape from; pixels must not ride, got %vx%v", task["width"], task["height"])
+	}
+	if task["resolution"] != "1080p" {
+		t.Fatalf("resolution = %+v, want the tier alone", task["resolution"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("want no notices, got %v", notices)
+	}
+
+	// A model that takes no pixels keeps the tier rule as well: an aspect has
+	// nowhere to ride, and dropping the tier too would leave the clip with no
+	// size signal at all.
+	pixelsless := parseRunwareFixture(t, `{"components":{"schemas":{"RequestBody":{"type":"array","items":{
+	  "type":"object","additionalProperties":false,
+	  "properties":{
+	    "positivePrompt":{"type":"string"},
+	    "resolution":{"type":"string","enum":["720p","1080p"]},
+	    "inputs":{"type":"object","properties":{
+	      "referenceImages":{"type":"array","maxItems":4,"items":{"type":"string"}}}}
+	}}}}}}`)
+	task, _, _, err = resolveRunwareVideoTask(pixelsless, VideoGenerateRequest{
+		Model: "klingai:test@pixelsless", Prompt: "p", VideoRole: "reference",
+		ConfigAspectRatio: "9:16", Resolution: "1080p",
+		Images: []string{reference},
+	})
+	if err != nil {
+		t.Fatalf("resolve on a model without pixels: %v", err)
+	}
+	if _, ok := task["width"]; ok {
+		t.Fatalf("a model without width/height must not receive pixels, got %vx%v", task["width"], task["height"])
+	}
+	if task["resolution"] != "1080p" {
+		t.Fatalf("resolution = %+v, want the tier alone on a model without pixels", task["resolution"])
+	}
+
+	// A frame turn is untouched by the rule: it inherits the frame's
+	// orientation with the tier on resolution, whether or not the planner
+	// named a ratio.
+	task, _, _, err = resolveRunwareVideoTask(schema, VideoGenerateRequest{
+		Model: "klingai:kling-video@4.0", Prompt: "animate",
+		AspectRatio: "9:16", AspectRatioExplicit: true, ConfigAspectRatio: "16:9", Resolution: "1080p",
+		Images: []string{reference},
+	})
+	if err != nil {
+		t.Fatalf("resolve frame turn: %v", err)
+	}
+	if _, ok := task["width"]; ok {
+		t.Fatalf("a frame turn inherits its frame; pixels must not ride, got %vx%v", task["width"], task["height"])
+	}
+	if task["resolution"] != "1080p" {
+		t.Fatalf("resolution = %+v, want the tier on a frame turn", task["resolution"])
+	}
+}
+
 func TestResolveRunwareVideoTaskResolutionTier(t *testing.T) {
 	schema := parseRunwareFixture(t, runwareKlingSchemaFixture)
 

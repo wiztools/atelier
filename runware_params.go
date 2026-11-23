@@ -123,7 +123,9 @@ func runwareSetInput(schema *ModelInputSchema, task map[string]any, key string, 
 // keyframe transition (two images on frameImages, auto-distributed first and
 // last, schema-gated below on a model that holds the pair), a reference turn
 // (useVideoAs:"reference" — the images ride referenceImages, never the
-// opening frame), and an extend (the source clip on inputs.video).
+// opening frame, and the clip is shaped from the call's or the configured
+// aspect rather than the reference image's), and an extend (the source
+// clip on inputs.video).
 func resolveRunwareVideoTask(schema *ModelInputSchema, req VideoGenerateRequest) (map[string]any, []string, []string, error) {
 	task := runwareTaskBase("videoInference", req.Model)
 	var notices []string
@@ -132,6 +134,10 @@ func resolveRunwareVideoTask(schema *ModelInputSchema, req VideoGenerateRequest)
 	sourceVideos := req.SourceVideos()
 	sourceImages := req.SourceImages()
 	extend := req.ExtendSource && len(sourceVideos) > 0
+	// referenceGuided is set once the images land on referenceImages — they
+	// are guidance with no frame to inherit, which the output-shape rule
+	// below reads (a start frame, or a start→end pair, fixes orientation).
+	referenceGuided := false
 
 	if schema == nil {
 		notices = append(notices, "Couldn't load the Runware model's parameter schema; generated with default parameters.")
@@ -220,6 +226,7 @@ func resolveRunwareVideoTask(schema *ModelInputSchema, req VideoGenerateRequest)
 				}
 			}
 			runwareSetInput(schema, task, "referenceImages", refs)
+			referenceGuided = true
 		case schema != nil && hasKey(nested, "image"):
 			if len(refs) > 1 {
 				notices = append(notices, fmt.Sprintf("Runware model %q takes one source image; used the first of %d.", req.Model, len(refs)))
@@ -271,9 +278,33 @@ func resolveRunwareVideoTask(schema *ModelInputSchema, req VideoGenerateRequest)
 	// input", so the configured tier scales the output instead of silently
 	// landing on the model's own default (Seedance 2.x defaults 720p). The
 	// restyle resolver has always sent it this way.
+	//
+	// A reference turn has no frame to inherit, so it takes the text-to-video
+	// shape rule with its own aspect: the call's explicit ratio when the
+	// planner passed one, otherwise the configured default — never the
+	// gateway's image-derived ratio, which describes the reference media (a
+	// landscape character sheet) rather than the canvas. That is the fal rule
+	// (resolveVideoBody's referenceGuided). The shape rides as width/height
+	// presets, because Runware documents resolution as unusable beside them.
+	// With no aspect to shape from (the config at "auto" or unset), or on a
+	// model that takes no pixels, the turn keeps the image-turn rule above:
+	// the tier alone rides, and under the documented contract the clip then
+	// takes the reference image's own shape.
+	shapeAspect, shapeExplicit := req.AspectRatio, req.AspectRatioExplicit
+	if referenceGuided && !req.AspectRatioExplicit {
+		shapeAspect = strings.TrimSpace(req.ConfigAspectRatio)
+		shapeExplicit = shapeAspect != "" && !isAutoAspectRatio(shapeAspect)
+	}
+	tier := strings.TrimSpace(req.Resolution)
+	aspectDriven := len(sourceImages) == 0
+	if referenceGuided && shapeExplicit {
+		if _, _, ok := runwareVideoDimensions(schema, shapeAspect, tier); ok {
+			aspectDriven = true
+		}
+	}
 	if !extend {
-		if len(sourceImages) > 0 {
-			if tier := strings.TrimSpace(req.Resolution); tier != "" {
+		if len(sourceImages) > 0 && !aspectDriven {
+			if tier != "" {
 				if prop, ok := schema.property("resolution"); ok {
 					if canonical, allowed := enumValueFor(prop, tier); allowed {
 						task["resolution"] = canonical
@@ -291,11 +322,16 @@ func resolveRunwareVideoTask(schema *ModelInputSchema, req VideoGenerateRequest)
 						notices = append(notices, fmt.Sprintf("The selected model %q does not offer resolution %q; using its default.", req.Model, tier))
 					}
 				} else {
-					notices = append(notices, fmt.Sprintf("Runware model %q has no resolution control; the clip follows the source frame and the model's own resolution default.", req.Model))
+					follows := "the source frame"
+					if referenceGuided {
+						follows = "the reference media"
+					}
+					notices = append(notices, fmt.Sprintf("Runware model %q has no resolution control; the clip follows %s and the model's own resolution default.", req.Model, follows))
 				}
 			}
 		} else {
-			// Text-to-video. The packagings publish the tier enum BESIDE
+			// Text-to-video — and a reference turn with an aspect to shape
+			// from. The packagings publish the tier enum BESIDE
 			// width/height (Kling 4.0: ["720p","1080p"] next to its fixed size
 			// presets), so the old pixels-win rule — send the tier only when
 			// the model takes no pixels — dropped the configured tier on every
@@ -310,8 +346,7 @@ func resolveRunwareVideoTask(schema *ModelInputSchema, req VideoGenerateRequest)
 			// model's default shape at the requested tier); the two fields
 			// are never written together.
 			tierSent := false
-			tier := strings.TrimSpace(req.Resolution)
-			aspectToken := strings.TrimSpace(req.AspectRatio)
+			aspectToken := strings.TrimSpace(shapeAspect)
 			_, _, aspectParsed := parseAspectRatio(aspectToken)
 			aspectRequested := aspectToken != "" && !isAutoAspectRatio(aspectToken) && aspectParsed
 			if tier != "" && schema != nil {
@@ -339,9 +374,9 @@ func resolveRunwareVideoTask(schema *ModelInputSchema, req VideoGenerateRequest)
 				}
 			}
 			if !tierSent {
-				if w, h, ok := runwareVideoDimensions(schema, req.AspectRatio, tier); ok {
+				if w, h, ok := runwareVideoDimensions(schema, shapeAspect, tier); ok {
 					task["width"], task["height"] = w, h
-				} else if aspect := aspectToken; aspect != "" && !isAutoAspectRatio(aspect) && req.AspectRatioExplicit && schema != nil {
+				} else if aspect := aspectToken; aspect != "" && !isAutoAspectRatio(aspect) && shapeExplicit && schema != nil {
 					if prop, ok := schema.property("resolution"); ok {
 						if canonical, allowed := enumValueFor(prop, aspect); allowed {
 							task["resolution"] = canonical
