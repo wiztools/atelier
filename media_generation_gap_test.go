@@ -182,8 +182,8 @@ func TestHarnessForceToolsVideoModeWhenTriageMisreadsToolset(t *testing.T) {
 	nonStreamCount := 0
 	prepCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
-			return falTestPricingResponse(), nil
+		if resp, ok := falTestPlatformResponse(req); ok {
+			return resp, nil
 		}
 		if strings.Contains(req.URL.Path, "/api/openapi/") {
 			return jsonResponse(`{"components":{"schemas":{"Input":{"type":"object","required":["prompt"],"properties":{"prompt":{"type":"string"},"duration":{"type":"string"},"aspect_ratio":{"type":"string"}}}}}}`), nil

@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -842,6 +845,9 @@ func TestGatewayGenerateVideoPricesTokenBilledModel(t *testing.T) {
 	app := NewApp()
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch {
+		case strings.HasPrefix(req.URL.Path, "/v1/models/billing-events"):
+			// No billing event posted: the estimate these tests pin is the fallback.
+			return jsonResponse(`{"billing_events":[],"next_cursor":null,"has_more":false}`), nil
 		case strings.HasPrefix(req.URL.Path, "/v1/models/pricing"):
 			return jsonResponse(`{"prices":[` +
 				`{"endpoint_id":"bytedance/seedance-2.0/reference-to-video","unit_price":0.014,"unit":"1000 tokens","currency":"USD"}` +
@@ -920,6 +926,9 @@ func TestGatewayGenerateVideoPricesTokenBilledVideoSourceTurn(t *testing.T) {
 	app := NewApp()
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch {
+		case strings.HasPrefix(req.URL.Path, "/v1/models/billing-events"):
+			// No billing event posted: the estimate these tests pin is the fallback.
+			return jsonResponse(`{"billing_events":[],"next_cursor":null,"has_more":false}`), nil
 		case strings.HasPrefix(req.URL.Path, "/v1/models/pricing"):
 			return jsonResponse(`{"prices":[` +
 				`{"endpoint_id":"bytedance/seedance-2.5/reference-to-video","unit_price":0.0214,"unit":"1000 tokens","currency":"USD"}` +
@@ -994,6 +1003,9 @@ func TestGatewayGenerateVideoPricesMegapixelBilledModel(t *testing.T) {
 	app := NewApp()
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch {
+		case strings.HasPrefix(req.URL.Path, "/v1/models/billing-events"):
+			// No billing event posted: the estimate these tests pin is the fallback.
+			return jsonResponse(`{"billing_events":[],"next_cursor":null,"has_more":false}`), nil
 		case strings.HasPrefix(req.URL.Path, "/v1/models/pricing"):
 			return jsonResponse(`{"prices":[` +
 				`{"endpoint_id":"fal-ai/ltx-2.3-22b/extend-video","unit_price":0.001605,"unit":"megapixel","currency":"USD"}` +
@@ -1077,6 +1089,9 @@ func TestGatewayGenerateLipsyncPricesMinuteBilledModel(t *testing.T) {
 	app := NewApp()
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch {
+		case strings.HasPrefix(req.URL.Path, "/v1/models/billing-events"):
+			// No billing event posted: the estimate these tests pin is the fallback.
+			return jsonResponse(`{"billing_events":[],"next_cursor":null,"has_more":false}`), nil
 		case strings.HasPrefix(req.URL.Path, "/v1/models/pricing"):
 			return jsonResponse(`{"prices":[` +
 				`{"endpoint_id":"fal-ai/sync-lipsync/v2","unit_price":3,"unit":"minutes","currency":"USD"}` +
@@ -1124,5 +1139,659 @@ func TestGatewayGenerateLipsyncPricesMinuteBilledModel(t *testing.T) {
 	// for the endpoint, priced from the rendered container.
 	if generated.CostMicros != 43750 {
 		t.Fatalf("CostMicros = %d, want 43750 (0.875s at $3/minute)", generated.CostMicros)
+	}
+}
+
+// falBillingTransport serves one billing-events payload (or a failure) and
+// records the request, so the reported-cost lookup's shape can be pinned.
+type falBillingTransport struct {
+	requests int
+	path     string
+	query    url.Values
+	auth     string
+	status   int
+	body     string
+	err      error
+}
+
+func (transport *falBillingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	transport.requests++
+	transport.path = req.URL.Path
+	transport.query = req.URL.Query()
+	transport.auth = req.Header.Get("Authorization")
+	if transport.err != nil {
+		return nil, transport.err
+	}
+	status := transport.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	return &http.Response{
+		StatusCode: status,
+		Status:     http.StatusText(status),
+		Body:       io.NopCloser(strings.NewReader(transport.body)),
+		Header:     http.Header{},
+	}, nil
+}
+
+// TestFetchFalBillingCost pins the one reported-cost request: what it asks
+// fal for, and how each answer maps onto a lookup outcome. The event shape is
+// the billing-events feed's documented record.
+func TestFetchFalBillingCost(t *testing.T) {
+	const reported = `{"request_id":"req-1","endpoint_id":"minimax/h3-max/reference-to-video","timestamp":"2026-11-23T18:09:00Z",` +
+		`"quantity":10,"output_units":10,"unit":"second","unit_price":0.16,"percent_discount":null,` +
+		`"cost_subtotal":1.6,"cost_discount":0,"cost_total":1.6,"cost_estimate_nano_usd":1600000000}`
+	const surcharge = `{"request_id":"req-1","endpoint_id":"x","timestamp":"2026-11-23T18:09:00Z","quantity":1024,"output_units":1024,` +
+		`"unit":"tokens","unit_price":0.02,"percent_discount":null,"cost_subtotal":0.02048,"cost_discount":0,` +
+		`"cost_total":0.02048,"cost_estimate_nano_usd":20480000}`
+	tests := []struct {
+		name       string
+		status     int
+		body       string
+		err        error
+		wantMicros int64
+		want       falBillingLookup
+	}{
+		{
+			name:       "the nano-USD field is the charge",
+			body:       `{"billing_events":[` + reported + `],"next_cursor":null,"has_more":false}`,
+			wantMicros: 1600000,
+			want:       falBillingReported,
+		},
+		{
+			name:       "cost_total stands in when the nano field is absent",
+			body:       `{"billing_events":[{"request_id":"req-1","cost_total":1.62048}],"next_cursor":null,"has_more":false}`,
+			wantMicros: 1620480,
+			want:       falBillingReported,
+		},
+		{
+			// A request can bill as several lines — fal's own combined
+			// examples are an output plus a reference-token surcharge.
+			name:       "every line carrying the request id is summed",
+			body:       `{"billing_events":[` + reported + `,` + surcharge + `],"next_cursor":null,"has_more":false}`,
+			wantMicros: 1620480,
+			want:       falBillingReported,
+		},
+		{
+			name: "another request's event is never harvested",
+			body: `{"billing_events":[{"request_id":"req-other","cost_total":9,"cost_estimate_nano_usd":9000000000}]}`,
+			want: falBillingMissing,
+		},
+		{
+			name: "the feed answers before billing has posted the event",
+			body: `{"billing_events":[],"next_cursor":null,"has_more":false}`,
+			want: falBillingMissing,
+		},
+		{
+			// "Not reported" and "reported as free" both read zero here; the
+			// estimate then has its say, and a free endpoint quotes zero
+			// anyway.
+			name: "a zero-cost event is not a report",
+			body: `{"billing_events":[{"request_id":"req-1","cost_total":0,"cost_estimate_nano_usd":0}]}`,
+			want: falBillingMissing,
+		},
+		{
+			name: "a sub-micro charge rounds away to not-reported",
+			body: `{"billing_events":[{"request_id":"req-1","cost_estimate_nano_usd":400}]}`,
+			want: falBillingMissing,
+		},
+		{name: "403 is a refusal", status: http.StatusForbidden, body: `{"error":{"type":"authorization_error","message":"Access denied"}}`, want: falBillingDenied},
+		{name: "401 is a refusal", status: http.StatusUnauthorized, body: `{"error":{"type":"authorization_error","message":"Invalid API key"}}`, want: falBillingDenied},
+		{name: "404 is a refusal (the feed is not enabled for the account)", status: http.StatusNotFound, want: falBillingDenied},
+		{name: "500 is a transient failure", status: http.StatusInternalServerError, want: falBillingFailed},
+		{name: "429 is a transient failure", status: http.StatusTooManyRequests, want: falBillingFailed},
+		{name: "a transport failure is transient", err: errors.New("connection reset"), want: falBillingFailed},
+		{name: "an undecodable payload is transient", body: `{not json`, want: falBillingFailed},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			transport := &falBillingTransport{status: tc.status, body: tc.body, err: tc.err}
+			gotMicros, got := fetchFalBillingCost(context.Background(), &http.Client{Transport: transport}, "key", "req-1")
+			if got != tc.want || gotMicros != tc.wantMicros {
+				t.Fatalf("fetchFalBillingCost = (%d, %d), want (%d, %d)", gotMicros, got, tc.wantMicros, tc.want)
+			}
+			if transport.requests != 1 {
+				t.Fatalf("billing requests = %d, want exactly 1 (no retry)", transport.requests)
+			}
+			// The request's shape, on every row: one keyed lookup of the one
+			// request id, with the account's key.
+			if transport.path != "/v1/models/billing-events" {
+				t.Fatalf("path = %q, want /v1/models/billing-events", transport.path)
+			}
+			if got := transport.query.Get("request_id"); got != "req-1" {
+				t.Fatalf("request_id filter = %q, want \"req-1\"", got)
+			}
+			if transport.auth != "Key key" {
+				t.Fatalf("authorization = %q, want \"Key key\"", transport.auth)
+			}
+			start, err := time.Parse(time.RFC3339, transport.query.Get("start"))
+			if err != nil {
+				t.Fatalf("start filter %q is not RFC3339: %v", transport.query.Get("start"), err)
+			}
+			// The window is widened past fal's 24h default but stays inside
+			// the feed's 90-day cap.
+			if age := time.Since(start); age < falBillingLookback-time.Hour || age > falBillingLookback+time.Hour {
+				t.Fatalf("start filter is %v old, want about %v", age, falBillingLookback)
+			}
+		})
+	}
+}
+
+// TestFalReportedCostMicrosNegativeCaches pins when a failed lookup is
+// remembered and when the next generation simply asks again. The estimate
+// serves every one of these cases — what is being tested is that a standing
+// refusal costs nothing per turn, a transient failure retries soon, and a feed
+// that merely has not posted yet is never assumed to stay that way.
+func TestFalReportedCostMicrosNegativeCaches(t *testing.T) {
+	ctx := context.Background()
+	const empty = `{"billing_events":[],"next_cursor":null,"has_more":false}`
+
+	t.Run("refusal is remembered for the day", func(t *testing.T) {
+		transport := &falBillingTransport{status: http.StatusForbidden}
+		cache := newFalPricingCache()
+		if _, ok := cache.reportedCostMicros(ctx, &http.Client{Transport: transport}, "key", "req-1"); ok {
+			t.Fatal("a refused lookup must not report a cost")
+		}
+		if _, ok := cache.reportedCostMicros(ctx, &http.Client{Transport: transport}, "key", "req-2"); ok {
+			t.Fatal("a lookup inside the denial window must not report a cost")
+		}
+		if transport.requests != 1 {
+			t.Fatalf("billing requests = %d, want 1 (the second call stayed inside the denial window)", transport.requests)
+		}
+		// Once the window lapses the key is asked again — a preset may have
+		// been widened on fal's side.
+		cache.billingDeniedAt = time.Now().Add(-falBillingDeniedTTL - time.Minute)
+		if _, ok := cache.reportedCostMicros(ctx, &http.Client{Transport: transport}, "key", "req-3"); ok {
+			t.Fatal("still refused: must not report a cost")
+		}
+		if transport.requests != 2 {
+			t.Fatalf("billing requests = %d, want 2 after the denial window lapsed", transport.requests)
+		}
+	})
+
+	t.Run("transient failure is remembered for minutes", func(t *testing.T) {
+		transport := &falBillingTransport{status: http.StatusInternalServerError}
+		cache := newFalPricingCache()
+		cache.reportedCostMicros(ctx, &http.Client{Transport: transport}, "key", "req-1")
+		cache.reportedCostMicros(ctx, &http.Client{Transport: transport}, "key", "req-2")
+		if transport.requests != 1 {
+			t.Fatalf("billing requests = %d, want 1 inside the failure window", transport.requests)
+		}
+		cache.billingFailedAt = time.Now().Add(-falBillingFailureTTL - time.Second)
+		transport.status, transport.body = http.StatusOK, `{"billing_events":[{"request_id":"req-3","cost_estimate_nano_usd":1600000000}]}`
+		cost, ok := cache.reportedCostMicros(ctx, &http.Client{Transport: transport}, "key", "req-3")
+		if !ok || cost != 1600000 {
+			t.Fatalf("reported cost = (%d, %v) after the window lapsed, want (1600000, true)", cost, ok)
+		}
+		if transport.requests != 2 {
+			t.Fatalf("billing requests = %d, want 2 after the failure window lapsed", transport.requests)
+		}
+	})
+
+	t.Run("a missing event is never cached", func(t *testing.T) {
+		transport := &falBillingTransport{body: empty}
+		cache := newFalPricingCache()
+		for _, id := range []string{"req-1", "req-2", "req-3"} {
+			if _, ok := cache.reportedCostMicros(ctx, &http.Client{Transport: transport}, "key", id); ok {
+				t.Fatalf("request %s: an empty feed must not report a cost", id)
+			}
+		}
+		if transport.requests != 3 {
+			t.Fatalf("billing requests = %d, want 3 (each generation asks once)", transport.requests)
+		}
+	})
+
+	t.Run("nothing to look up", func(t *testing.T) {
+		transport := &falBillingTransport{body: empty}
+		cache := newFalPricingCache()
+		for _, id := range []string{"", "   "} {
+			if _, ok := cache.reportedCostMicros(ctx, &http.Client{Transport: transport}, "key", id); ok {
+				t.Fatalf("request id %q: must not report a cost", id)
+			}
+		}
+		if _, ok := cache.reportedCostMicros(ctx, &http.Client{Transport: transport}, "  ", "req-1"); ok {
+			t.Fatal("a blank key must not report a cost")
+		}
+		if _, ok := cache.reportedCostMicros(ctx, nil, "key", "req-1"); ok {
+			t.Fatal("a nil client must not report a cost")
+		}
+		if transport.requests != 0 {
+			t.Fatalf("billing requests = %d, want 0", transport.requests)
+		}
+	})
+}
+
+// TestEstimateFalGenerationCostPrefersReportedCharge drives the App-level
+// entry the gateway calls: fal's own charge for the request wins, the
+// estimate serves when the feed has no event, and a call that knows no
+// request id never asks the feed at all.
+func TestEstimateFalGenerationCostPrefersReportedCharge(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	keyring.MockInit()
+	if err := saveFalAPIKey("fal-test-key"); err != nil {
+		t.Fatalf("saveFalAPIKey: %v", err)
+	}
+	t.Cleanup(func() { _ = clearFalAPIKey() })
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig: %v", err)
+	}
+
+	billing := `{"billing_events":[],"next_cursor":null,"has_more":false}`
+	billingRequests, pricingRequests := 0, 0
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case strings.HasPrefix(req.URL.Path, "/v1/models/billing-events"):
+			billingRequests++
+			return jsonResponse(billing), nil
+		case strings.HasPrefix(req.URL.Path, "/v1/models/pricing"):
+			pricingRequests++
+			return jsonResponse(`{"prices":[` +
+				`{"endpoint_id":"minimax/h3-max/reference-to-video","unit_price":0.05,"unit":"seconds","currency":"USD"}` +
+				`],"next_cursor":null,"has_more":false}`), nil
+		}
+		t.Fatalf("unexpected request %s %s", req.Method, req.URL)
+		return nil, nil
+	})
+	const model = "minimax/h3-max/reference-to-video"
+	ctx := context.Background()
+	// A 10s 1080p turn: the hints the gateway builds, whose estimate is
+	// $0.05 × 10 × 3.2 = $1.60.
+	turn := falBillingHints{Requests: 1, Seconds: 10, TierMultiplier: 3.2}
+
+	// fal's charge is $1.62048 — the documented 10-second, five-square-image
+	// 1080p example, whose reference surcharge the estimate cannot see. The
+	// report wins, and no pricing quote is even fetched.
+	billing = `{"billing_events":[{"request_id":"req-1","cost_total":1.62048,"cost_estimate_nano_usd":1620480000}],"next_cursor":null,"has_more":false}`
+	if got := app.estimateFalGenerationCost(ctx, config, model, falBillingHints{Requests: 1, Seconds: 10, TierMultiplier: 3.2, RequestID: "req-1"}); got != 1620480 {
+		t.Fatalf("cost = %d, want 1620480 from the reported charge", got)
+	}
+	if pricingRequests != 0 || billingRequests != 1 {
+		t.Fatalf("requests = %d pricing / %d billing, want 0 / 1 (the report answered)", pricingRequests, billingRequests)
+	}
+
+	// No event posted: the estimate serves — $1.60.
+	billing = `{"billing_events":[],"next_cursor":null,"has_more":false}`
+	if got := app.estimateFalGenerationCost(ctx, config, model, falBillingHints{Requests: 1, Seconds: 10, TierMultiplier: 3.2, RequestID: "req-2"}); got != 1600000 {
+		t.Fatalf("cost = %d, want 1600000 from the estimate fallback", got)
+	}
+	if pricingRequests != 1 || billingRequests != 2 {
+		t.Fatalf("requests = %d pricing / %d billing, want 1 / 2", pricingRequests, billingRequests)
+	}
+
+	// A call site with no request id (no queue handle) skips the feed.
+	if got := app.estimateFalGenerationCost(ctx, config, model, turn); got != 1600000 {
+		t.Fatalf("cost = %d, want 1600000 from the estimate", got)
+	}
+	if billingRequests != 2 {
+		t.Fatalf("billing requests = %d, want 2 (no request id, no lookup)", billingRequests)
+	}
+}
+
+// TestFalVideoTierMultiplier pins the documented tier ratios: the tier the
+// request rode over the cheapest one the pricing quote covers. Case-insensitive
+// because the h3-max schemas spell the same enum both ways.
+func TestFalVideoTierMultiplier(t *testing.T) {
+	tests := []struct {
+		model      string
+		resolution string
+		want       float64
+	}{
+		{"minimax/h3-max/reference-to-video", "480P", 0},
+		{"minimax/h3-max/reference-to-video", "768P", 1.6},
+		{"minimax/h3-max/reference-to-video", "1080P", 3.2},
+		{"minimax/h3-max/reference-to-video", "1080p", 3.2},
+		{"minimax/h3-max/reference-to-video", " 1080P ", 3.2},
+		{"minimax/h3-max/reference-to-video", "", 0},
+		// Not in this endpoint's table: the resolver drops such a value for
+		// the model's own default, which the caller prices instead.
+		{"minimax/h3-max/reference-to-video", "2K", 0},
+		{" minimax/h3-max/reference-to-video", "1080P", 3.2},
+		{"minimax/h3-max/image-to-video", "1080P", 3.2},
+		{"minimax/h3-max/text-to-video", "768p", 1.6},
+		{"minimax/h3-max/extend-video", "1080P", 3.2},
+		{"minimax/h3-max/extend-video", "2K", 6.4},
+		{"minimax/h3-max/extend-video", "2k", 6.4},
+		{"minimax/h3/text-to-video", "768P", 1.2},
+		{"minimax/h3/text-to-video", "2K", 2.6},
+		{"minimax/h3/reference-to-video", "4K", 3.2},
+		{"minimax/h3/image-to-video", "2K", 2.6},
+		// No table to scale from. recast and reframe-video publish one, but the
+		// pricing API quotes both flat ($0.05 per "units", live 2026-11-24), so
+		// there is no per-second base to scale; the rest never stated a table.
+		{"minimax/h3-max/reframe-video", "1080p", 0},
+		{"minimax/h3-max/recast", "1080P", 0},
+		{"fal-ai/kling-video/v3/standard/text-to-video", "1080p", 0},
+		{"fal-ai/kling-video/o1/standard/image-to-video", "1080p", 0},
+		{"bytedance/seedance-2.5/reference-to-video", "1080p", 0},
+		{"minimax/h3-max/reference-to-video-pro", "1080P", 0},
+	}
+	for _, tc := range tests {
+		if got := falVideoTierMultiplier(tc.model, tc.resolution); math.Abs(got-tc.want) > 1e-9 {
+			t.Fatalf("falVideoTierMultiplier(%q, %q) = %v, want %v", tc.model, tc.resolution, got, tc.want)
+		}
+	}
+}
+
+// TestEstimateFalCostMicrosTierMultiplier pins how the tier ratio meets the the
+// quote: it scales a per-second price after quantity × unit price, composes
+// with the discount multiplier, and leaves everything else alone.
+func TestEstimateFalCostMicrosTierMultiplier(t *testing.T) {
+	// fal's real spellings, as the live check read them (2026-11-24): the
+	// minimax family is quoted per "seconds" in the plural, the flat shape of
+	// recast and reframe-video is $0.05 per "units".
+	pricing := &falPricingTransport{body: `{"prices":[` +
+		`{"endpoint_id":"minimax/h3-max/reference-to-video","unit_price":0.05,"unit":"seconds","currency":"USD"},` +
+		`{"endpoint_id":"minimax/h3-max/reference-to-video-singular","unit_price":0.05,"unit":"second","currency":"USD"},` +
+		`{"endpoint_id":"minimax/h3-max/reframe-video","unit_price":0.05,"unit":"units","currency":"USD"}` +
+		`],"next_cursor":null,"has_more":false}`}
+	cache := newFalPricingCache()
+	ctx := context.Background()
+	client := &http.Client{Transport: pricing}
+	tests := []struct {
+		name     string
+		endpoint string
+		hints    falBillingHints
+		want     int64
+	}{
+		{
+			name:     "1080p scales the 480p base",
+			endpoint: "minimax/h3-max/reference-to-video",
+			hints:    falBillingHints{Requests: 1, Seconds: 10, TierMultiplier: 3.2},
+			want:     1600000,
+		},
+		{
+			// The plural is what fal returns for this family today; the
+			// singular is still accepted, since older quotes used it.
+			name:     "the singular unit spells the same rate",
+			endpoint: "minimax/h3-max/reference-to-video-singular",
+			hints:    falBillingHints{Requests: 1, Seconds: 10, TierMultiplier: 3.2},
+			want:     1600000,
+		},
+		{
+			name:     "the base tier is unscaled",
+			endpoint: "minimax/h3-max/reference-to-video",
+			hints:    falBillingHints{Requests: 1, Seconds: 10, TierMultiplier: 1},
+			want:     500000,
+		},
+		{
+			name:     "no table means no scaling",
+			endpoint: "minimax/h3-max/reference-to-video",
+			hints:    falBillingHints{Requests: 1, Seconds: 10},
+			want:     500000,
+		},
+		{
+			name:     "a value under 1 is ignored",
+			endpoint: "minimax/h3-max/reference-to-video",
+			hints:    falBillingHints{Requests: 1, Seconds: 10, TierMultiplier: 0.5},
+			want:     500000,
+		},
+		{
+			name:     "a value over the sanity cap is ignored",
+			endpoint: "minimax/h3-max/reference-to-video",
+			hints:    falBillingHints{Requests: 1, Seconds: 10, TierMultiplier: 100},
+			want:     500000,
+		},
+		{
+			// recast and reframe-video are really quoted this way: a flat $0.05
+			// per "units". The documented tables are per-second rates, so a
+			// tier ratio must never touch this quote — it would bill a flat
+			// price three times over.
+			name:     "a flat quote is never scaled",
+			endpoint: "minimax/h3-max/reframe-video",
+			hints:    falBillingHints{Requests: 1, TierMultiplier: 3.2},
+			want:     50000,
+		},
+		{
+			name:     "the tier composes with the reference discount",
+			endpoint: "minimax/h3-max/reference-to-video",
+			hints:    falBillingHints{Requests: 1, Seconds: 10, TierMultiplier: 3.2, PriceMultiplier: 0.6},
+			want:     960000,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := estimateFalCostMicros(ctx, cache, client, "key", tc.endpoint, nil, tc.hints); got != tc.want {
+				t.Fatalf("estimate = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFalVideoRequestedSeconds pins the duration a request-duration-billed
+// endpoint charges: what the resolver put on the wire, else the model's
+// declared default, else nothing (the caller keeps the rendered clip).
+func TestFalVideoRequestedSeconds(t *testing.T) {
+	plain := &ModelInputSchema{Properties: map[string]SchemaProperty{
+		"duration": {Name: "duration", Type: "number", Default: float64(5)},
+	}}
+	nested := &ModelInputSchema{
+		Properties: map[string]SchemaProperty{
+			"settings": {Name: "settings", Kind: schemaObject, Nested: map[string]SchemaProperty{
+				"duration": {Name: "duration", Type: "number", Default: float64(3)},
+			}},
+		},
+		order: []string{"settings"},
+	}
+	nodefault := &ModelInputSchema{Properties: map[string]SchemaProperty{
+		"duration": {Name: "duration", Type: "number"},
+	}}
+	tests := []struct {
+		name   string
+		schema *ModelInputSchema
+		body   map[string]any
+		want   float64
+		ok     bool
+	}{
+		// The wire value is the billed one: this is post-clamp, so a 20s ask
+		// the resolver clamped to the model's 15s maximum reads 15 here.
+		{name: "the wire value wins", schema: plain, body: map[string]any{"duration": float64(15)}, want: 15, ok: true},
+		{name: "a Go integer on the wire", schema: plain, body: map[string]any{"duration": 10}, want: 10, ok: true},
+		{name: "a string-typed dial", schema: plain, body: map[string]any{"duration": "7"}, want: 7, ok: true},
+		{name: "a nested dial", schema: nested, body: map[string]any{"settings": map[string]any{"duration": float64(4)}}, want: 4, ok: true},
+		{name: "nothing on the wire bills the model default", schema: plain, body: map[string]any{}, want: 5, ok: true},
+		{name: "an unreadable wire value falls to the default", schema: plain, body: map[string]any{"duration": "auto"}, want: 5, ok: true},
+		{name: "a nil body falls to the default", schema: plain, body: nil, want: 5, ok: true},
+		{name: "no wire value and no default is not-ok", schema: nodefault, body: map[string]any{}, ok: false},
+		{name: "no schema and no body is not-ok", schema: nil, body: nil, ok: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := falVideoRequestedSeconds(tc.schema, tc.body, Overrides{}, "minimax/h3-max/reference-to-video")
+			if ok != tc.ok || (ok && got != tc.want) {
+				t.Fatalf("falVideoRequestedSeconds = (%v, %v), want (%v, %v)", got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+// TestFalBillsRequestedDuration scopes the requested-duration rule to the one
+// page that states it; every sibling keeps its rendered clip.
+func TestFalBillsRequestedDuration(t *testing.T) {
+	for model, want := range map[string]bool{
+		"minimax/h3-max/reference-to-video":            true,
+		" minimax/h3-max/reference-to-video":           true,
+		"minimax/h3-max/image-to-video":                false,
+		"minimax/h3-max/extend-video":                  false,
+		"minimax/h3-max/text-to-video":                 false,
+		"minimax/h3/reference-to-video":                false,
+		"fal-ai/kling-video/v3/standard/text-to-video": false,
+	} {
+		if got := falBillsRequestedDuration(model); got != want {
+			t.Fatalf("falBillsRequestedDuration(%q) = %v, want %v", model, got, want)
+		}
+	}
+}
+
+// TestGatewayGenerateVideoPricesTieredReferenceToVideo is the regression shape
+// of conv_3e8e49c2839590e100f5128c: a minimax/h3-max/reference-to-video turn
+// the planner sent with neither duration nor resolution, so the configured
+// defaults rode — 10s at 1080p — and the model rendered a 10.144s container.
+// fal bills that turn $0.16/s × the REQUESTED 10s = $1.60; the ledger recorded
+// $0.5072, the pricing API's 480p base rate × the rendered container, because
+// the quote is a base price that billing scales by resolution. The estimate
+// now rides the tier the request actually sent and the duration it asked for,
+// and fal's own charge replaces it as soon as billing has posted the event.
+func TestGatewayGenerateVideoPricesTieredReferenceToVideo(t *testing.T) {
+	// Minimal h3-max reference-to-video-shaped input schema: the dials the
+	// resolver maps (duration, resolution with fal's uppercase enum, the
+	// scalar start-frame image) plus the required prompt expansion switch.
+	const schema = `{"components":{"schemas":{"H3MaxReferenceToVideoInput":{"type":"object","required":["prompt","prompt_expansion_mode"],` +
+		`"properties":{"prompt":{"type":"string","minLength":1},` +
+		`"prompt_expansion_mode":{"type":"string","default":"balanced"},` +
+		`"duration":{"type":"number","minimum":0.92,"maximum":15,"default":5},` +
+		`"resolution":{"type":"string","enum":["480P","768P","1080P"],"default":"768P"},` +
+		`"aspect_ratio":{"type":"string","enum":["adaptive","21:9","16:9","4:3","1:1","3:4","9:16"],"default":"adaptive"},` +
+		`"image_url":{"anyOf":[{"type":"string","minLength":1},{"type":"null"}]},` +
+		`"reference_image_urls":{"type":"array","items":{"type":"string"},"maxItems":9}}}}}}`
+	tests := []struct {
+		name       string
+		resolution string
+		billing    string
+		want       int64
+	}{
+		{
+			// The reported turn: 10s × $0.16 — fal's dashboard charge to the cent.
+			name:       "1080p estimate",
+			resolution: "1080p",
+			billing:    `{"billing_events":[],"next_cursor":null,"has_more":false}`,
+			want:       1600000,
+		},
+		{
+			name:       "768p estimate",
+			resolution: "768p",
+			billing:    `{"billing_events":[],"next_cursor":null,"has_more":false}`,
+			want:       800000,
+		},
+		{
+			name:       "480p is the base tier",
+			resolution: "480p",
+			billing:    `{"billing_events":[],"next_cursor":null,"has_more":false}`,
+			want:       500000,
+		},
+		{
+			// No tier on the call: the resolver sends none and fal applies the
+			// schema's 768P default, which is what must be priced.
+			name:       "no tier on the call bills the model default",
+			resolution: "",
+			billing:    `{"billing_events":[],"next_cursor":null,"has_more":false}`,
+			want:       800000,
+		},
+		{
+			// Billing has posted: fal's charge replaces the estimate. This is
+			// fal's documented ten-second, five-square-image 1080p example —
+			// the fifth image's reference surcharge is exactly what no
+			// estimate from the request's parameters can see.
+			name:       "the reported charge wins",
+			resolution: "1080p",
+			billing:    `{"billing_events":[{"request_id":"req-tier-1","quantity":10,"unit":"second","unit_price":0.16,"cost_total":1.62048,"cost_estimate_nano_usd":1620480000}],"next_cursor":null,"has_more":false}`,
+			want:       1620480,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+
+			keyring.MockInit()
+			if err := saveFalAPIKey("fal-test-key"); err != nil {
+				t.Fatalf("saveFalAPIKey: %v", err)
+			}
+			t.Cleanup(func() { _ = clearFalAPIKey() })
+
+			config := defaultAppConfig()
+			config.Storage = ConfigStorage{
+				Root:      filepath.Join(home, ".atelier"),
+				History:   filepath.Join(home, ".atelier", "history"),
+				Artifacts: filepath.Join(home, ".atelier", "history"),
+			}
+			if err := writeAppConfig(config); err != nil {
+				t.Fatalf("writeAppConfig: %v", err)
+			}
+
+			var submitted map[string]any
+			var billingQuery url.Values
+			app := NewApp()
+			app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				switch {
+				case strings.HasPrefix(req.URL.Path, "/v1/models/billing-events"):
+					billingQuery = req.URL.Query()
+					return jsonResponse(tc.billing), nil
+				case strings.HasPrefix(req.URL.Path, "/v1/models/pricing"):
+					return jsonResponse(`{"prices":[` +
+						`{"endpoint_id":"minimax/h3-max/reference-to-video","unit_price":0.05,"unit":"seconds","currency":"USD"}` +
+						`],"next_cursor":null,"has_more":false}`), nil
+				case strings.Contains(req.URL.Path, "/api/openapi/"):
+					return jsonResponse(schema), nil
+				}
+				if strings.Contains(req.URL.Host, "fal.run") {
+					switch {
+					case req.Method == http.MethodPost:
+						if err := json.NewDecoder(req.Body).Decode(&submitted); err != nil {
+							t.Fatalf("decode submit body: %v", err)
+						}
+						return jsonResponse(`{"request_id":"req-tier-1"}`), nil
+					case strings.HasSuffix(req.URL.Path, "/status"):
+						return jsonResponse(`{"status":"COMPLETED"}`), nil
+					case strings.HasSuffix(req.URL.Path, "/requests/req-tier-1"):
+						return jsonResponse(`{"video":{"url":"https://queue.fal.run/dl/tier-video.mp4","content_type":"video/mp4"}}`), nil
+					default:
+						// The clip download: the turn's real 10.144s container
+						// — longer than the 10s fal billed.
+						return mp4Resp(mediasnifftest.MP4WithDuration(0, 1000, 10144), "video/mp4"), nil
+					}
+				}
+				t.Fatalf("unexpected request %s %s", req.Method, req.URL)
+				return nil, nil
+			})
+
+			gateway := newToolGateway(app, config)
+			generated, err := gateway.tools.GenerateVideo(context.Background(), VideoGenerateRequest{
+				// What the executor hands the gateway once the configured
+				// defaults fill a call that named neither: 10s, the tier.
+				Model:       "minimax/h3-max/reference-to-video",
+				Prompt:      "A 9-second continuous Pixar-style 3D underwater shot in the bright Central Plaza.",
+				Duration:    "10",
+				Resolution:  tc.resolution,
+				AspectRatio: "16:9",
+				Images:      []string{tinyPNG},
+			})
+			if err != nil {
+				t.Fatalf("GenerateVideo: %v", err)
+			}
+			if generated.CostMicros != tc.want {
+				t.Fatalf("CostMicros = %d, want %d", generated.CostMicros, tc.want)
+			}
+			// The estimate keys off what was actually sent, so pin the wire:
+			// the duration, and the tier in fal's own enum spelling (or none).
+			if got := submitted["duration"]; got != float64(10) {
+				t.Fatalf("submitted duration = %#v, want the number 10", got)
+			}
+			wantTier := "1080P"
+			switch tc.resolution {
+			case "768p":
+				wantTier = "768P"
+			case "480p":
+				wantTier = "480P"
+			case "":
+				wantTier = ""
+			}
+			if got, _ := submitted["resolution"].(string); got != wantTier {
+				t.Fatalf("submitted resolution = %q, want %q", got, wantTier)
+			}
+			// One lookup, keyed on the request the queue returned.
+			if got := billingQuery.Get("request_id"); got != "req-tier-1" {
+				t.Fatalf("billing lookup request_id = %q, want \"req-tier-1\"", got)
+			}
+		})
 	}
 }

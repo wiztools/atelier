@@ -359,8 +359,8 @@ func TestHarnessReferenceImageSendsConfiguredVideoRatio(t *testing.T) {
 	nonStreamCount := 0
 	prepCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
-			return falTestPricingResponse(), nil
+		if resp, ok := falTestPlatformResponse(req); ok {
+			return resp, nil
 		}
 		if strings.Contains(req.URL.Path, "/api/openapi/") {
 			// seedance-2.5 reference-to-video shape: prompt-addressed image_urls

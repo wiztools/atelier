@@ -43,6 +43,24 @@ func falTestPricingResponse() *http.Response {
 		`],"next_cursor":null,"has_more":false}`)
 }
 
+// falTestPlatformResponse answers the Platform API reads the gateway makes
+// after a fal generation, so a strict test transport routes both through one
+// guard: the pricing quote the estimate reads, and the billing-events feed the
+// reported-cost lookup reads first (fal_pricing.go). The feed answers with no
+// events — the state of a request whose billing has not posted yet — so these
+// tests keep pinning the estimate, which is what that lookup falls back to.
+// Tests that need a reported charge serve the route themselves
+// (TestFalReportedCost… in fal_pricing_test.go).
+func falTestPlatformResponse(req *http.Request) (*http.Response, bool) {
+	switch {
+	case req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, "/v1/models/billing-events"):
+		return jsonResponse(`{"billing_events":[],"next_cursor":null,"has_more":false}`), true
+	case strings.HasPrefix(req.URL.Path, "/v1/models/pricing"):
+		return falTestPricingResponse(), true
+	}
+	return nil, false
+}
+
 // TestHarnessGeneratesImageViaFal is the fal.ai counterpart of
 // TestHarnessGeneratesImageViaPlannedTool. It runs the full chat turn
 // (triage → planner → generate_image tool → fal queue API → final response) and
@@ -93,8 +111,8 @@ func TestHarnessGeneratesImageViaFal(t *testing.T) {
 	prepCalls := 0
 	nonStreamCount := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
-			return falTestPricingResponse(), nil
+		if resp, ok := falTestPlatformResponse(req); ok {
+			return resp, nil
 		}
 		if strings.Contains(req.URL.Path, "/api/openapi/") {
 			// Minimal flux/schnell text-to-image schema so resolveImageBody can
@@ -256,8 +274,8 @@ func TestHarnessGeneratesVideoViaFal(t *testing.T) {
 	nonStreamCount := 0
 	prepCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
-			return falTestPricingResponse(), nil
+		if resp, ok := falTestPlatformResponse(req); ok {
+			return resp, nil
 		}
 		if strings.Contains(req.URL.Path, "/api/openapi/") {
 			// Minimal kling text-to-video schema so resolveVideoBody can map the
@@ -440,8 +458,8 @@ func TestHarnessAnimatesAttachedImageViaFal(t *testing.T) {
 	nonStreamCount := 0
 	prepCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
-			return falTestPricingResponse(), nil
+		if resp, ok := falTestPlatformResponse(req); ok {
+			return resp, nil
 		}
 		if strings.Contains(req.URL.Path, "/api/openapi/") {
 			// Minimal kling image-to-video schema so resolveVideoBody can run.
@@ -576,8 +594,8 @@ func TestHarnessMotionControlsAttachedImageAndVideoViaFal(t *testing.T) {
 	nonStreamCount := 0
 	prepCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
-			return falTestPricingResponse(), nil
+		if resp, ok := falTestPlatformResponse(req); ok {
+			return resp, nil
 		}
 		if strings.Contains(req.URL.String(), "storage/auth/token") {
 			return jsonResponse(`{"token":"cdn-test-token","token_type":"Bearer","base_url":"https://v3.test.fal.media"}`), nil
@@ -694,8 +712,8 @@ func TestHarnessGeneratesAudioViaFal(t *testing.T) {
 	nonStreamCount := 0
 	prepCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
-			return falTestPricingResponse(), nil
+		if resp, ok := falTestPlatformResponse(req); ok {
+			return resp, nil
 		}
 		if strings.Contains(req.URL.Path, "/api/openapi/") {
 			return jsonResponse(`{"components":{"schemas":{"TtsInput":{"type":"object","required":["text"],"properties":{"text":{"type":"string"},"voice":{"type":"string","default":"Rachel"}}}}}}`), nil
@@ -812,8 +830,8 @@ func TestHarnessAppendsLoopNoticeForUnsupportedModel(t *testing.T) {
 	nonStreamCount := 0
 	prepCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
-			return falTestPricingResponse(), nil
+		if resp, ok := falTestPlatformResponse(req); ok {
+			return resp, nil
 		}
 		if strings.Contains(req.URL.Path, "/api/openapi/") {
 			// Sound schema — prompt + duration only, no loop parameter.
@@ -917,8 +935,8 @@ func TestHarnessGeneratesSoundViaFal(t *testing.T) {
 	nonStreamCount := 0
 	prepCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
-			return falTestPricingResponse(), nil
+		if resp, ok := falTestPlatformResponse(req); ok {
+			return resp, nil
 		}
 		if strings.Contains(req.URL.Path, "/api/openapi/") {
 			// Minimized fal-ai/elevenlabs/sound-effects/v2 shape (see
@@ -1063,8 +1081,8 @@ func TestHarnessTranscribesAudioViaFal(t *testing.T) {
 	nonStreamCount := 0
 	prepCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
-			return falTestPricingResponse(), nil
+		if resp, ok := falTestPlatformResponse(req); ok {
+			return resp, nil
 		}
 		if strings.Contains(req.URL.Host, "fal.run") {
 			if req.Method == http.MethodPost && req.URL.Path == "/"+defaultFalTranscribeModel {
@@ -1200,8 +1218,8 @@ func TestHarnessMentionedAssetDrivesTranscribe(t *testing.T) {
 	nonStreamCount := 0
 	prepCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
-			return falTestPricingResponse(), nil
+		if resp, ok := falTestPlatformResponse(req); ok {
+			return resp, nil
 		}
 		if strings.Contains(req.URL.Host, "fal.run") {
 			if req.Method == http.MethodPost && req.URL.Path == "/"+defaultFalTranscribeModel {
@@ -1333,8 +1351,8 @@ func TestHarnessExtendsAudioViaFal(t *testing.T) {
 	app := NewApp()
 	harnessCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
-			return falTestPricingResponse(), nil
+		if resp, ok := falTestPlatformResponse(req); ok {
+			return resp, nil
 		}
 		switch {
 		case strings.Contains(req.URL.String(), "storage/auth/token"):
@@ -1530,8 +1548,8 @@ func TestHarnessExtendsVideoViaFal(t *testing.T) {
 	app := NewApp()
 	harnessCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
-			return falTestPricingResponse(), nil
+		if resp, ok := falTestPlatformResponse(req); ok {
+			return resp, nil
 		}
 		switch {
 		case strings.Contains(req.URL.String(), "storage/auth/token"):
@@ -1768,8 +1786,8 @@ func TestHarnessAppendsRemediationNoticeForFalBillingError(t *testing.T) {
 	app := NewApp()
 	nonStreamCount := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
-			return falTestPricingResponse(), nil
+		if resp, ok := falTestPlatformResponse(req); ok {
+			return resp, nil
 		}
 		if strings.Contains(req.URL.Path, "/api/openapi/") {
 			// Video schema — prompt only.

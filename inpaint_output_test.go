@@ -120,6 +120,8 @@ func inpaintOutputMockApp(t *testing.T, model string, output []byte) *App {
 	app := NewApp()
 	app.client.Transport = falHandler(func(req *http.Request) (*http.Response, error) {
 		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/models/billing-events":
+			return jsonResp(`{"billing_events":[],"next_cursor":null,"has_more":false}`), nil
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/models/pricing":
 			return jsonResp(`{"prices":[]}`), nil
 		case req.Method == http.MethodGet && req.URL.Path == "/api/openapi/queue/openapi.json":

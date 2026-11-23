@@ -210,6 +210,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 						imageCount = 1
 					}
 					resp.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, falBillingHints{
+						RequestID:  job.ID,
 						Images:     imageCount,
 						Requests:   1,
 						Megapixels: imageResultMegapixels(resp.Images, resp.Image),
@@ -463,7 +464,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				if recovered {
 					notices = append(notices, mediaGenerationRecoveredNotice)
 				}
-				hints := falBillingHints{Requests: 1}
+				hints := falBillingHints{Requests: 1, RequestID: job.ID}
 				if len(req.SourceVideos()) == 0 {
 					// Pure generation: the rendered clip's own container is
 					// the exact billed length (a planner-omitted or "auto"
@@ -474,6 +475,14 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 					if seconds, ok := falVideoBilledSeconds(generated.Data, req.Duration); ok {
 						hints.Seconds = seconds
 						hints.Tokens = falVideoTokenEstimate(schema, req, 0, seconds)
+					}
+					// An endpoint that bills the REQUESTED duration charges
+					// what the call asked for, not the longer clip the model
+					// rendered on top of it (falBillsRequestedDuration).
+					if falBillsRequestedDuration(req.Model) {
+						if seconds, ok := falVideoRequestedSeconds(schema, body, falOverrides, req.Model); ok {
+							hints.Seconds = seconds
+						}
 					}
 				} else {
 					// Video-source turns (extend/motion/reference): per-second
@@ -500,6 +509,11 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				// (container for pure turns, num_frames default when the
 				// output embeds source footage).
 				hints.Megapixels = falVideoBilledMegapixels(schema, req, generated.Data)
+				// The pricing quote is the cheapest resolution tier's rate;
+				// scale it onto the tier this request actually rode — the
+				// explicit one, else the model default the resolver left fal
+				// to apply (schemaStringInput mirrors resolveVideoBody).
+				hints.TierMultiplier = falVideoTierMultiplier(req.Model, schemaStringInput(schema, "resolution", req.Resolution))
 				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)
 			}
 			generated.Notices = notices
@@ -675,6 +689,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				if seconds, ok := falLipsyncBillingSeconds(generated.Data, audioData); ok {
 					hints.Seconds = seconds
 				}
+				hints.RequestID = job.ID
 				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)
 			}
 			generated.Notices = notices
@@ -844,6 +859,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				if priced {
 					hints.Seconds = seconds
 				}
+				hints.RequestID = job.ID
 				cost := app.estimateFalGenerationCost(ctx, config, req.Model, hints)
 				if result.Video.Data != nil {
 					result.Video.CostMicros = cost
@@ -963,7 +979,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				notices = append(notices, mediaGenerationRecoveredNotice)
 			}
 			if err == nil {
-				resp.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, falBillingHints{Images: 1, Requests: 1})
+				resp.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, falBillingHints{Images: 1, Requests: 1, RequestID: job.ID})
 			}
 			return resp, notices, err
 		}
@@ -1090,7 +1106,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				}
 				// Per-second upscalers bill the source clip's length, which the
 				// gateway never probed — no estimate rather than a guess.
-				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, falBillingHints{Requests: 1})
+				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, falBillingHints{Requests: 1, RequestID: job.ID})
 			}
 			generated.Notices = notices
 			return generated, genErr
@@ -1206,6 +1222,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				if seconds, ok := reframeBilledSeconds(sourceSeconds, sourceReadable, generated.Data); ok {
 					hints.Seconds = seconds
 				}
+				hints.RequestID = job.ID
 				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)
 			}
 			generated.Notices = notices
@@ -1369,6 +1386,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				if seconds, ok := falVideoBilledSeconds(generated.Data, ""); ok {
 					hints.Seconds = seconds
 				}
+				hints.RequestID = job.ID
 				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)
 			}
 			generated.Notices = notices
@@ -1492,6 +1510,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				if seconds, ok := falVideoBilledSeconds(generated.Data, ""); ok {
 					hints.Seconds = seconds
 				}
+				hints.RequestID = job.ID
 				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)
 			}
 			generated.Notices = notices
@@ -1700,6 +1719,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				if seconds, ok := audioBillingSeconds(req.Duration, generated.Data); ok {
 					hints.Seconds = seconds
 				}
+				hints.RequestID = job.ID
 				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)
 			}
 			generated.Notices = notices
@@ -1747,6 +1767,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 					Requests:   1,
 					Characters: len([]rune(req.PreviewText)),
 				}
+				hints.RequestID = job.ID
 				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)
 			}
 			return generated, err
@@ -1844,6 +1865,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				if seconds, ok := falDurationSeconds(req.Duration); ok {
 					hints.Seconds = seconds
 				}
+				hints.RequestID = job.ID
 				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)
 			}
 			generated.Notices = notices
@@ -1972,6 +1994,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				nil,
 			)
 			if err == nil {
+				hints.RequestID = job.ID
 				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)
 			}
 			return generated, err

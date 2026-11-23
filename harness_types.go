@@ -108,11 +108,15 @@ type HarnessToolActivity struct {
 	Model      string `json:"model,omitempty"`
 	MediaKind  string `json:"mediaKind,omitempty"`
 	MediaCount int    `json:"mediaCount,omitempty"`
-	// CostMicros estimates what this media generation cost in USD millionths,
-	// computed at call time from fal's pricing API (unit price × billed units
-	// — images, seconds of video, characters, or one request). An estimate,
-	// not a bill: feature multipliers fal applies server-side may not be
-	// captured. Zero when the backend is local (Ollama, openai-compatible) or
+	// CostMicros is what this media generation cost in USD millionths: the
+	// provider's own charge when it reports one — fal's billing-events record
+	// for the request, when the configured key can read billing, and Runware's
+	// reported deduction — else an estimate from fal's pricing API at call
+	// time (unit price × billed units — images, seconds of video, characters,
+	// or one request — scaled onto the resolution tier the request rode where
+	// the model page publishes a table). The estimate is not a bill: feature
+	// multipliers fal applies server-side that no table covers may still be
+	// missed. Zero when the backend is local (Ollama, openai-compatible) or
 	// pricing was unavailable; failed calls carry none, matching MediaCount.
 	CostMicros int64 `json:"costMicros,omitempty"`
 	// CostUnknown marks a media generation whose cost could not be determined

@@ -17,25 +17,45 @@ import (
 
 // fal media generation has no token meter — fal bills per output unit (an
 // image, a second of video, a character of speech, one request, a block of
-// video tokens, or a megapixel of generated pixels, depending on the model). Cost is therefore estimated at call
-// time from fal's pricing API: GET {falPlatformBaseURL}/v1/models/pricing?endpoint_id=a,b,c returns
-// each endpoint's unit price and billing unit, and the tool gateway multiplies
-// by the quantity it knows from the request (image count, requested or
-// rendered seconds, prompt length, or rendered pixels — width × height ×
-// frames for video). This is an estimate, not a bill — feature multipliers fal
-// applies server-side (Kling's audio toggle, resolution tiers) may not be
-// captured — but it is the only fal source that attributes cost to a specific
-// generation: the usage/line-items API aggregates per time bucket with no
-// request IDs, so it cannot answer "what did this call cost". Token- and
-// megapixel-billed video models (seedance-2.x per "1000 tokens", the
-// ltx-2.3-22b family per "megapixel") report no usage in the generation
-// response; their quantity is computed from fal's documented formulas over the
-// request's actual parameters (see falVideoTokenEstimate and
-// falVideoBilledMegapixels).
+// video tokens, or a megapixel of generated pixels, depending on the model).
+//
+// A completed generation's cost has two sources, tried in order:
+//
+//   - REPORTED: GET {falPlatformBaseURL}/v1/models/billing-events?request_id=…
+//     returns fal's own charge for that one request (cost_estimate_nano_usd,
+//     plus the quantity and unit price it was measured against). This is the
+//     number the fal dashboard shows, and the only one that is right wherever
+//     the estimate cannot be: the endpoint prices by a feature the request
+//     can't recompute (h3-max/recast's input-video tokens, Kling's voice
+//     control), or the pricing API's quote simply doesn't describe the
+//     endpoint's real table (conv_b1fbbc85d72ecd1c9bcc1a76: two recast calls
+//     estimated $0.05 flat against a documented $0.17/s). It needs a key whose
+//     permissions include billing:usage:read (the BILLING or FULL preset) —
+//     an inference-only key is refused, and that refusal is remembered.
+//
+//   - ESTIMATED (the fallback): GET {falPlatformBaseURL}/v1/models/pricing?endpoint_id=a,b,c
+//     returns each endpoint's unit price and billing unit, and the tool
+//     gateway multiplies by the quantity it knows from the request (image
+//     count, requested or rendered seconds, prompt length, or rendered pixels
+//     — width × height × frames for video). This is an estimate, not a bill.
+//     The quote is a BASE price — fal applies "proportional adjustments for
+//     resolution" when it bills — so the endpoints whose pages publish a
+//     tier table are scaled onto the tier the request actually rode
+//     (falVideoTierMultiplier; conv_3e8e49c2839590e100f5128c: a 1080p
+//     h3-max/reference-to-video turn priced at the 480p base, $0.5072 against
+//     fal's $1.60), and feature multipliers fal applies server-side that no
+//     table here covers may still be missed. Token- and megapixel-billed
+//     video models (seedance-2.x per "1000 tokens", the ltx-2.3-22b family
+//     per "megapixel") report no usage in the generation response either;
+//     their quantity is computed from fal's documented formulas over the
+//     request's actual parameters (see falVideoTokenEstimate and
+//     falVideoBilledMegapixels).
 //
 // Everything here is fail-soft by design: no key, no network, an unknown
 // billing unit, or an unresolvable quantity yields 0 (no cost shown), never a
-// failed or delayed generation.
+// failed or delayed generation — the reported lookup is one bounded request
+// with no retry, and anything but a matching event falls through to the
+// estimate.
 
 const (
 	// falPricingTTL is how long fetched quotes stay fresh. fal prices move on
@@ -54,6 +74,32 @@ const (
 	// falPricingMaxPages bounds cursor pagination on the pricing response;
 	// one batch of configured models fits a single page in practice.
 	falPricingMaxPages = 3
+
+	// falBillingDeniedTTL is how long a refusal from the billing-events feed
+	// is remembered. 401/403/404 means the configured key cannot read billing
+	// (an inference-only preset, or the feed not enabled for the account) —
+	// a standing condition no retry this process can fix, so the estimate
+	// serves the rest of the day rather than paying a refused request per
+	// generation. A key change restarts the app and the clock with it.
+	falBillingDeniedTTL = 24 * time.Hour
+	// falBillingFailureTTL is the transient-failure window — the pricing
+	// cache's negative TTL, for the same reason: an offline machine must not
+	// retry on every media turn, and a recovered network is picked up in
+	// minutes.
+	falBillingFailureTTL = 10 * time.Minute
+	// falBillingLookupTimeout bounds the one reported-cost request. Cost is
+	// telemetry: a slow billing API may cost the turn a few seconds, never
+	// the generation itself.
+	falBillingLookupTimeout = 5 * time.Second
+	// falBillingLookback widens the feed query's start bound (fal's default
+	// is 24h) so a generation recovered long after its submit, or a clock
+	// skew, still lands inside the window. The endpoint caps a range at 90
+	// days; a week is far beyond any turn.
+	falBillingLookback = 7 * 24 * time.Hour
+	// falMaxTierMultiplier bounds the resolution-tier scaling of a quote —
+	// a sanity cap on the documented tables (the steepest today is 6.4×,
+	// h3-max extend-video's 2K over its 480p base).
+	falMaxTierMultiplier = 32.0
 )
 
 // falPriceQuote is one endpoint's unit pricing.
@@ -75,6 +121,11 @@ type falPricingCache struct {
 	quotes    map[string]falPriceQuote
 	fetchedAt time.Time
 	failedAt  time.Time
+	// billingDeniedAt / billingFailedAt are the billing-events feed's negative
+	// windows (falBillingDeniedTTL / falBillingFailureTTL) — zero while the
+	// reported-cost lookup is worth attempting.
+	billingDeniedAt time.Time
+	billingFailedAt time.Time
 }
 
 func newFalPricingCache() *falPricingCache {
@@ -213,6 +264,131 @@ func (cache *falPricingCache) fetch(ctx context.Context, httpClient *http.Client
 	return nil
 }
 
+// falBillingEvent mirrors one record of the billing-events feed. Only the
+// request's own charge is read: cost_estimate_nano_usd is the precision-
+// preserving form of cost_total (an integer count, where summing float dollars
+// drifts), so it wins and cost_total stands in when absent.
+type falBillingEvent struct {
+	RequestID   string   `json:"request_id"`
+	CostTotal   *float64 `json:"cost_total"`
+	CostNanoUSD *float64 `json:"cost_estimate_nano_usd"`
+}
+
+// falBillingEventsResponse mirrors the feed's payload. A request_id filter
+// returns at most a handful of rows, so one page is read — the matching ids
+// are all that matter, and fal's own limit is far above that.
+type falBillingEventsResponse struct {
+	BillingEvents []falBillingEvent `json:"billing_events"`
+}
+
+// falBillingLookup is the outcome of one reported-cost request.
+type falBillingLookup int
+
+const (
+	// falBillingMissing: the feed answered and carries no event for the
+	// request — most often because billing posts a moment after the result
+	// does. Nothing to cache; the next generation asks again.
+	falBillingMissing falBillingLookup = iota
+	falBillingReported
+	// falBillingDenied: the key cannot read billing. Standing, so it is
+	// remembered for falBillingDeniedTTL.
+	falBillingDenied
+	// falBillingFailed: transport, status, or decode failure. Transient, so
+	// it is remembered for falBillingFailureTTL only.
+	falBillingFailed
+)
+
+// fetchFalBillingCost makes the one reported-cost request for requestID and
+// returns fal's charge in USD millionths. A request can bill as several lines
+// (an output plus a reference surcharge), so every event carrying the id is
+// summed; an id appearing on no event is falBillingMissing, never $0 — a zero
+// here means "not reported", so the caller's estimate still has its say.
+func fetchFalBillingCost(ctx context.Context, httpClient *http.Client, apiKey, requestID string) (int64, falBillingLookup) {
+	return fetchFalBillingCostSince(ctx, httpClient, apiKey, requestID, time.Now().Add(-falBillingLookback))
+}
+
+// fetchFalBillingCostSince is fetchFalBillingCost with the feed window's start
+// given instead of derived (falBillingLookback back from now). The live check
+// names a window that covers a request recorded days ago, so it keeps
+// exercising this exact path as that request ages (fal_pricing_live_test.go).
+func fetchFalBillingCostSince(ctx context.Context, httpClient *http.Client, apiKey, requestID string, start time.Time) (int64, falBillingLookup) {
+	query := url.Values{}
+	query.Set("request_id", requestID)
+	query.Set("start", start.UTC().Format(time.RFC3339))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, falPlatformBaseURL+"/v1/models/billing-events?"+query.Encode(), nil)
+	if err != nil {
+		return 0, falBillingFailed
+	}
+	req.Header.Set("Authorization", "Key "+apiKey)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return 0, falBillingFailed
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
+		return 0, falBillingDenied
+	case http.StatusOK:
+	default:
+		return 0, falBillingFailed
+	}
+	var payload falBillingEventsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return 0, falBillingFailed
+	}
+	nanoUSD := 0.0
+	for _, event := range payload.BillingEvents {
+		if strings.TrimSpace(event.RequestID) != requestID {
+			continue
+		}
+		switch {
+		case event.CostNanoUSD != nil && *event.CostNanoUSD > 0:
+			nanoUSD += *event.CostNanoUSD
+		case event.CostTotal != nil && *event.CostTotal > 0:
+			nanoUSD += *event.CostTotal * 1e9
+		}
+	}
+	if math.IsNaN(nanoUSD) || math.IsInf(nanoUSD, 0) || nanoUSD <= 0 {
+		return 0, falBillingMissing
+	}
+	// 1 micro = 1,000 nano. A charge below half a micro rounds away to
+	// nothing, which is the same "not reported" the event's absence is.
+	micros := int64(math.Round(nanoUSD / 1000))
+	if micros <= 0 {
+		return 0, falBillingMissing
+	}
+	return micros, falBillingReported
+}
+
+// reportedCostMicros reads fal's own charge for one completed request from the
+// billing-events feed. ok is false — and nothing is guessed — when the lookup
+// is not worth making (no id, a negative window open), is refused, fails, or
+// finds no event yet; the caller then falls back to the estimate. The mutex
+// is held across the request for the same reason quote holds it: harness tool
+// calls run sequentially, so this serializes nothing that was concurrent.
+func (cache *falPricingCache) reportedCostMicros(ctx context.Context, httpClient *http.Client, apiKey, requestID string) (int64, bool) {
+	requestID = strings.TrimSpace(requestID)
+	if httpClient == nil || requestID == "" || strings.TrimSpace(apiKey) == "" {
+		return 0, false
+	}
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	now := time.Now()
+	if now.Sub(cache.billingDeniedAt) < falBillingDeniedTTL || now.Sub(cache.billingFailedAt) < falBillingFailureTTL {
+		return 0, false
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, falBillingLookupTimeout)
+	defer cancel()
+	cost, outcome := fetchFalBillingCost(lookupCtx, httpClient, apiKey, requestID)
+	switch outcome {
+	case falBillingDenied:
+		cache.billingDeniedAt = now
+	case falBillingFailed:
+		cache.billingFailedAt = now
+	}
+	return cost, outcome == falBillingReported
+}
+
 // falBillingHints carries the quantity inputs a call site knows, before the
 // billing unit is known — the pricing quote's unit decides which one applies.
 // Zero values mean "not computable here" (e.g. a per-second upscaler whose
@@ -240,6 +416,16 @@ type falBillingHints struct {
 	// family multiplies by 0.6 whenever the call carries video inputs (see
 	// falVideoReferenceDiscount); 0 means no multiplier applies.
 	PriceMultiplier float64
+	// TierMultiplier scales the quote the other way — up from the base price
+	// onto the resolution tier the request actually rode, for the endpoints
+	// whose pages publish a per-tier table (see falVideoTierMultiplier). 0 or
+	// 1 means the request rode the base tier or the endpoint has no table.
+	TierMultiplier float64
+	// RequestID is the fal queue request id of the completed generation this
+	// call prices. When set, fal's own charge for that request is read first
+	// (falPricingCache.reportedCostMicros) and the estimate serves only when
+	// no event is available.
+	RequestID string
 }
 
 // quantityForUnit maps a billing unit onto the hint that prices it.
@@ -410,6 +596,16 @@ func estimateFalCostMicros(ctx context.Context, cache *falPricingCache, httpClie
 	cost := quote.UnitPrice * quantity * 1e6
 	if hints.PriceMultiplier > 0 && hints.PriceMultiplier <= 1 {
 		cost *= hints.PriceMultiplier
+	}
+	// The tier multiplier is a surcharge, so its guard is the discount's
+	// mirror: only a value above 1 (and under the sanity cap) scales — 0 and 1
+	// both mean the base tier, and a bogus value never inflates a bill. The
+	// documented tables are per-second rates, so they scale only a per-second
+	// quote; a flat per-clip quote on such an endpoint describes something
+	// else and is left alone.
+	perSecond := quote.Unit == "second" || quote.Unit == "seconds"
+	if perSecond && hints.TierMultiplier > 1 && hints.TierMultiplier <= falMaxTierMultiplier {
+		cost *= hints.TierMultiplier
 	}
 	if math.IsNaN(cost) || math.IsInf(cost, 0) || cost <= 0 {
 		return 0
@@ -626,6 +822,158 @@ func falVideoReferenceDiscount(model string) float64 {
 	return 0
 }
 
+// falVideoTier is one rung of an endpoint's per-second resolution table.
+type falVideoTier struct {
+	// Name is the tier as its schema spells it, uppercased — the h3-max
+	// endpoints spell the same enum "1080P" and "1080p", so lookup is
+	// case-insensitive.
+	Name string
+	// Rate is fal's documented USD per second at the tier.
+	Rate float64
+}
+
+// falVideoTiers returns fal's documented per-second rates by resolution tier
+// for the endpoints whose model pages publish a table, cheapest tier first
+// (read off fal.ai/models/<id>, 2026-11). The pricing API quotes each of
+// these endpoints at its FIRST tier only — its own docs call the quote a
+// "Base price" that billing adjusts "for resolution". Verified two ways. A
+// live read of all seven (2026-11-24, fal_pricing_live_test.go) returned a
+// per-second quote at or under the table's $0.05 — h3-max image-to-video and
+// text-to-video at $0.0375, a proportional discount that leaves the ratios
+// intact. And 130 priced turns in history — every minimax turn whose billed
+// length could be re-measured (115 on h3-max/reference-to-video, 14 on
+// h3-max/extend-video, one on h3/text-to-video) — imply exactly the $0.05
+// 480p rate, conv_3e8e49c2839590e100f5128c's 1080p turn among them. So a
+// request on a higher tier is under-reported by the tier's ratio until it is
+// scaled (that turn recorded $0.5072 against fal's $1.60). Nil for every
+// other endpoint: its quote is used as is, and no ratio is guessed onto a
+// model whose page states none.
+//
+// Deliberately NOT listed, though their pages also price by tier or feature:
+//   - minimax/h3-max/recast ($0.085/s at 768p, $0.17/s at 1080p, plus input
+//     video tokens) and minimax/h3-max/reframe-video (the reference table's
+//     three tiers) — the pricing API quotes both FLAT: $0.05 per "units",
+//     not a per-second rate (live 2026-11-24). There is no base to scale, and
+//     estimateFalCostMicros leaves a non-per-second quote alone, so a table
+//     entry could never apply. Both estimate $0.05 a call whatever their
+//     length or tier (conv_b1fbbc85d72ecd1c9bcc1a76: two 6.6s recast calls
+//     at the 1080p default recorded $0.05 each against roughly $2 each).
+//   - Kling v3's audio toggle (its page: $0.084/s off, $0.126/s on) — the
+//     pricing API quotes $0.14/s (live 2026-11-24, and the same figure
+//     implied by the one priced turn in history), matching none of the page's
+//     three rates, so which configuration the base describes is unknown.
+//
+// All three are served by the reported charge instead (reportedCostMicros).
+func falVideoTiers(model string) []falVideoTier {
+	switch strings.TrimSpace(model) {
+	case "minimax/h3-max/text-to-video",
+		"minimax/h3-max/image-to-video",
+		"minimax/h3-max/reference-to-video":
+		return []falVideoTier{{"480P", 0.05}, {"768P", 0.08}, {"1080P", 0.16}}
+	case "minimax/h3-max/extend-video":
+		return []falVideoTier{{"480P", 0.05}, {"768P", 0.08}, {"1080P", 0.16}, {"2K", 0.32}}
+	case "minimax/h3/text-to-video",
+		"minimax/h3/image-to-video",
+		"minimax/h3/reference-to-video":
+		return []falVideoTier{{"480P", 0.05}, {"768P", 0.06}, {"2K", 0.13}, {"4K", 0.16}}
+	}
+	return nil
+}
+
+// falVideoTierMultiplier returns how many times the base quote a request that
+// rode resolution costs on a tiered endpoint — the tier's documented rate over
+// the cheapest tier's, so the pricing API's live quote (and any proportional
+// account discount already folded into it) is scaled rather than replaced by
+// a hardcoded price. Zero when the endpoint has no table, the tier is the
+// base one, or the tier is not in the table (a value the resolver would have
+// dropped for the model's own default — the caller passes the EFFECTIVE tier
+// from schemaStringInput, so that default is what gets priced).
+func falVideoTierMultiplier(model, resolution string) float64 {
+	tiers := falVideoTiers(model)
+	if len(tiers) < 2 || tiers[0].Rate <= 0 {
+		return 0
+	}
+	want := strings.ToUpper(strings.TrimSpace(resolution))
+	for _, tier := range tiers[1:] {
+		if tier.Name == want {
+			if tier.Rate <= tiers[0].Rate {
+				return 0
+			}
+			return tier.Rate / tiers[0].Rate
+		}
+	}
+	return 0
+}
+
+// falBillsRequestedDuration reports the endpoints whose page bills the
+// duration the REQUEST asked for rather than the clip the model rendered.
+// Only minimax/h3-max/reference-to-video states it ("Billing uses the
+// requested output duration") — and its schema warns that "the output can run
+// up to about 0.7 s longer than requested", which is exactly the gap the
+// container was measuring (conv_3e8e49c2839590e100f5128c: a 10s request
+// rendered a 10.144s container). The sibling pages say only "per second of
+// video generated", so they keep the rendered clip.
+func falBillsRequestedDuration(model string) bool {
+	return strings.TrimSpace(model) == "minimax/h3-max/reference-to-video"
+}
+
+// falVideoRequestedSeconds resolves the duration a request-duration-billed
+// endpoint charges: the value the resolver actually put on the wire — after
+// its enum snap and range clamp, which is why the body is read rather than
+// the canonical request — falling back to the model's declared default when
+// the call sent none (fal then bills that default). ok is false when neither
+// is known, and the caller keeps the rendered clip's own seconds.
+func falVideoRequestedSeconds(schema *ModelInputSchema, body map[string]any, ov Overrides, model string) (float64, bool) {
+	if schema != nil && body != nil {
+		if path, _, ok := findNative(schema, ov, "video", model, "duration"); ok {
+			if seconds, ok := bodyNumberAtPath(body, path); ok && seconds > 0 {
+				return seconds, true
+			}
+		}
+	}
+	if seconds := schemaNumberDefault(schema, "duration"); seconds > 0 {
+		return seconds, true
+	}
+	return 0, false
+}
+
+// bodyNumberAtPath reads a numeric value from a resolved request body at a
+// dot-path (setBodyPath's write shape): a JSON number, a Go integer, or a
+// numeric string. Absent and non-numeric values are not-ok.
+func bodyNumberAtPath(body map[string]any, path string) (float64, bool) {
+	parts := strings.SplitN(path, ".", 2)
+	value, ok := body[parts[0]]
+	if !ok {
+		return 0, false
+	}
+	if len(parts) == 2 {
+		nested, ok := value.(map[string]any)
+		if !ok {
+			return 0, false
+		}
+		if value, ok = nested[parts[1]]; !ok {
+			return 0, false
+		}
+	}
+	switch number := value.(type) {
+	case float64:
+		return number, true
+	case float32:
+		return float64(number), true
+	case int:
+		return float64(number), true
+	case int64:
+		return float64(number), true
+	case json.Number:
+		parsed, err := number.Float64()
+		return parsed, err == nil
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(number), 64)
+		return parsed, err == nil
+	}
+	return 0, false
+}
+
 // falVideoBilledMegapixels computes the megapixel quantity an MP-billed video
 // model is charged for. fal's ltx-2.3-22b family prices per "megapixel of
 // generated video data (width × height × frames)":
@@ -766,6 +1114,10 @@ func falLipsyncBillingSeconds(output []byte, audio string) (float64, bool) {
 // estimateFalGenerationCost is the App-level entry the tool gateway calls
 // after a successful fal generation. Nil-receiver safe (tests build bare App
 // values) and returns 0 whenever pricing cannot be resolved.
+//
+// fal's own charge for the request wins when the call site knows its request
+// id (hints.RequestID) and the configured key can read billing; the estimate
+// serves every other case, so a refused lookup changes nothing but accuracy.
 func (a *App) estimateFalGenerationCost(ctx context.Context, config AppConfig, endpointID string, hints falBillingHints) int64 {
 	if a == nil || a.client == nil || a.falPricing == nil {
 		return 0
@@ -773,6 +1125,9 @@ func (a *App) estimateFalGenerationCost(ctx context.Context, config AppConfig, e
 	apiKey, err := loadFalAPIKey()
 	if err != nil || strings.TrimSpace(apiKey) == "" {
 		return 0
+	}
+	if cost, ok := a.falPricing.reportedCostMicros(ctx, a.client, apiKey, hints.RequestID); ok {
+		return cost
 	}
 	return estimateFalCostMicros(ctx, a.falPricing, a.client, apiKey, endpointID, configuredFalEndpointIDs(config, endpointID), hints)
 }

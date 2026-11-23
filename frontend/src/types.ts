@@ -223,9 +223,10 @@ type HarnessToolActivityView = {
   model?: string;
   mediaKind?: string;
   mediaCount?: number;
-  // Estimated cost of a media generation or transcription in USD millionths,
-  // computed at call time from fal's pricing API; absent for local backends
-  // and calls pricing could not price.
+  // Cost of a media generation or transcription in USD millionths: the
+  // provider's reported charge when it gives one (fal's billing record for the
+  // request, on a key that can read billing), else an estimate from fal's
+  // pricing API; absent for local backends and calls pricing could not price.
   costMicros?: number;
   // True when the generation is paid but unpriceable (the Replicate backend
   // reports no cost) — renders "?" in the money column instead of the empty
