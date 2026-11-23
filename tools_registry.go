@@ -244,6 +244,17 @@ func (r *ToolVideoResult) measureVideoShape(data []byte) {
 	r.AspectRatio = aspectRatioForPixels(r.Width, r.Height)
 }
 
+// aspectRatioNear reports whether a delivered width/height sits within
+// runwareAspectNoticeTolerance (natural-log ratio, ~3%) of a requested ratio:
+// a preset's normal rounding is not a different shape. An unmeasurable side
+// is not a dispute — there is nothing to compare.
+func aspectRatioNear(aw, ah, width, height int) bool {
+	if aw <= 0 || ah <= 0 || width <= 0 || height <= 0 {
+		return true
+	}
+	return math.Abs(math.Log(float64(width)/float64(height))-math.Log(float64(aw)/float64(ah))) <= runwareAspectNoticeTolerance
+}
+
 type ToolVideoFile struct {
 	TempPath  string `json:"tempPath,omitempty"`
 	MimeType  string `json:"mimeType,omitempty"`
@@ -1479,7 +1490,23 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 			}
 			if restoredBrief != "" {
 				output.Diagnostics = append(output.Diagnostics,
-					"The planned prompt dropped most of the user's brief, so the call ran with the user's own request as its prompt (mention tokens removed; the attached media ride the call).")
+					"The planned prompt dropped most of the user's brief, so the call ran with the user's own request as the prompt (mention tokens removed; the attached media ride the call).")
+			}
+			// A shape the planner asked for by name is checked against the clip
+			// that actually shipped. Runware's models differ in whether they
+			// honour an output size beside input media, and its endpoints
+			// enforce the schemas' rules for some models and not others
+			// (2026-11-24: MiniMax H3 Fast refused a width beside a start
+			// frame, PixVerse V6 accepted one its schema forbids), so a size
+			// that was sent is not yet a shape that was delivered. The measured
+			// size already lets the reply describe the real clip
+			// (conv_357cd8af5943e138ab8a9178); this says the two disagree.
+			if videoGenerationProvider(tools.Config) == "runware" && explicit && output.Width > 0 && output.Height > 0 {
+				if aw, ah, ok := parseAspectRatio(call.AspectRatio); ok && !aspectRatioNear(aw, ah, output.Width, output.Height) {
+					output.Notices = append(output.Notices, fmt.Sprintf(
+						"Requested a %s video, but %s delivered %dx%d. Atelier did not reshape the clip.",
+						call.AspectRatio, model, output.Width, output.Height))
+				}
 			}
 			output.Notices = append(output.Notices, sourceNotices...)
 			if keyframesFallbackNotice != "" {

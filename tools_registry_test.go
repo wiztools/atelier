@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"atelier/internal/mediasniff/mediasnifftest"
 )
 
 // TestImageSizeForAspectRatio checks that named aspect ratios derive concrete
@@ -873,6 +875,62 @@ func TestGenerateVideoKeyframesRouteOnRunware(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestGenerateVideoRunwareDeliveredShape pins the check that closes the loop
+// on an explicit aspect ratio: a size the resolver sent is not yet a shape
+// the model delivered (Runware enforces its schemas' rules for some models
+// and not others), so the measured clip is compared with the ask and a
+// disagreement is said out loud. A preset's rounding is not a disagreement,
+// and other backends keep their own notices.
+func TestGenerateVideoRunwareDeliveredShape(t *testing.T) {
+	const frame = "data:image/png;base64,AAA"
+	run := func(t *testing.T, provider, aspect string, delivered []byte) ToolVideoResult {
+		t.Helper()
+		config := defaultAppConfig()
+		config.Models.VideoProvider = provider
+		def := videoGenerationToolDefinition(AppConfig{}, false)
+		exec := HarnessToolExecutionContext{
+			Config:         config,
+			AttachedImages: []string{frame},
+			GenerateVideo: func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error) {
+				return GeneratedVideo{Data: delivered, MimeType: "video/mp4"}, nil
+			},
+		}
+		result, _, err := def.Execute(context.Background(), exec, HarnessToolCall{Name: "generate_video", Content: "animate", AspectRatio: aspect})
+		if err != nil {
+			t.Fatalf("execute: %v", err)
+		}
+		video, ok := result.(ToolVideoResult)
+		if !ok {
+			t.Fatalf("result = %T, want ToolVideoResult", result)
+		}
+		return video
+	}
+
+	// Honoured: the 9:16 ask came back 1080x1920 (Kling 4.0, live
+	// 2026-11-24), and nothing needs saying.
+	if video := run(t, "runware", "9:16", mediasnifftest.MP4WithVideoTrack(1080, 1920)); len(video.Notices) != 0 {
+		t.Fatalf("a delivered shape that matches the ask needs no notice, got %v", video.Notices)
+	}
+	// A preset's rounding is not a different shape: MiniMax H3's 9:16 class
+	// renders 480x864.
+	if video := run(t, "runware", "9:16", mediasnifftest.MP4WithVideoTrack(480, 864)); len(video.Notices) != 0 {
+		t.Fatalf("a preset's rounding is not a disagreement, got %v", video.Notices)
+	}
+	// Ignored: the model kept the frame's square shape.
+	video := run(t, "runware", "9:16", mediasnifftest.MP4WithVideoTrack(720, 720))
+	if len(video.Notices) != 1 || !strings.Contains(video.Notices[0], "Requested a 9:16 video") || !strings.Contains(video.Notices[0], "delivered 720x720") {
+		t.Fatalf("a shape that disagrees with the ask must be said, got %v", video.Notices)
+	}
+	// Without an explicit ask there is nothing to compare against.
+	if video := run(t, "runware", "", mediasnifftest.MP4WithVideoTrack(720, 720)); len(video.Notices) != 0 {
+		t.Fatalf("no explicit ask, no dispute, got %v", video.Notices)
+	}
+	// Another backend keeps its own notices.
+	if video := run(t, "fal", "9:16", mediasnifftest.MP4WithVideoTrack(720, 720)); len(video.Notices) != 0 {
+		t.Fatalf("the check is scoped to the backend it was verified on, got %v", video.Notices)
+	}
 }
 
 // TestGenerateVideoOpeningFrameValidation pins the guards for openingFrame: it

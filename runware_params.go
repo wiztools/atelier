@@ -125,7 +125,8 @@ func runwareSetInput(schema *ModelInputSchema, task map[string]any, key string, 
 // (useVideoAs:"reference" — the images ride referenceImages, never the
 // opening frame, and the clip is shaped from the call's or the configured
 // aspect rather than the reference image's), and an extend (the source
-// clip on inputs.video).
+// clip on inputs.video). A frame turn carrying an explicit ratio is shaped
+// the same way wherever the model's rules accept a size beside its frames.
 func resolveRunwareVideoTask(schema *ModelInputSchema, req VideoGenerateRequest) (map[string]any, []string, []string, error) {
 	task := runwareTaskBase("videoInference", req.Model)
 	var notices []string
@@ -279,31 +280,45 @@ func resolveRunwareVideoTask(schema *ModelInputSchema, req VideoGenerateRequest)
 	// landing on the model's own default (Seedance 2.x defaults 720p). The
 	// restyle resolver has always sent it this way.
 	//
-	// A reference turn has no frame to inherit, so it takes the text-to-video
-	// shape rule with its own aspect: the call's explicit ratio when the
-	// planner passed one, otherwise the configured default — never the
-	// gateway's image-derived ratio, which describes the reference media (a
-	// landscape character sheet) rather than the canvas. That is the fal rule
-	// (resolveVideoBody's referenceGuided). The shape rides as width/height
-	// presets, because Runware documents resolution as unusable beside them.
-	// With no aspect to shape from (the config at "auto" or unset), or on a
-	// model that takes no pixels, the turn keeps the image-turn rule above:
-	// the tier alone rides, and under the documented contract the clip then
-	// takes the reference image's own shape.
+	// An image turn is otherwise shaped from an aspect only where the model's
+	// own rules accept a size beside the images it carries (runwareValidSize —
+	// the packagings publish that as an allOf rule, and MiniMax H3 enforces it
+	// with a 400). Two turns ask for one: a reference turn, which has no frame
+	// to inherit and so takes the call's explicit ratio or else the configured
+	// default — never the gateway's image-derived ratio, which describes the
+	// reference media (a landscape character sheet) rather than the canvas,
+	// the fal rule (resolveVideoBody's referenceGuided) — and a frame turn
+	// with an EXPLICIT ratio, where the planner's ask legitimately overrides
+	// the frame (the fal inherit rule's one exception). The shape rides as
+	// width/height presets, because Runware documents resolution as unusable
+	// beside them. With no aspect to shape from (the config at "auto" or
+	// unset), or where the rules leave no size the model takes, the turn keeps
+	// the image-turn rule above: the tier alone rides, and under the
+	// documented contract the clip then takes the input's own shape.
 	shapeAspect, shapeExplicit := req.AspectRatio, req.AspectRatioExplicit
 	if referenceGuided && !req.AspectRatioExplicit {
 		shapeAspect = strings.TrimSpace(req.ConfigAspectRatio)
 		shapeExplicit = shapeAspect != "" && !isAutoAspectRatio(shapeAspect)
 	}
 	tier := strings.TrimSpace(req.Resolution)
-	aspectDriven := len(sourceImages) == 0
-	if referenceGuided && shapeExplicit {
-		if _, _, ok := runwareVideoDimensions(schema, shapeAspect, tier); ok {
-			aspectDriven = true
-		}
+	sizeW, sizeH, sizeSubstituted, sizeOK := 0, 0, false, false
+	if len(sourceImages) > 0 && shapeExplicit && (referenceGuided || req.AspectRatioExplicit) {
+		sizeW, sizeH, sizeSubstituted, sizeOK = runwareValidSize(schema, task, shapeAspect, tier)
+	}
+	aspectDriven := len(sourceImages) == 0 || sizeOK
+	if sizeSubstituted {
+		notices = append(notices, fmt.Sprintf("Runware model %q does not offer %s beside %s; generated at its nearest allowed size, %dx%d.", req.Model, shapeAspect, runwareShapeSource(referenceGuided, req.Keyframes), sizeW, sizeH))
 	}
 	if !extend {
 		if len(sourceImages) > 0 && !aspectDriven {
+			// The turn asked for a shape this model will not take beside these
+			// images. Say so when the ask was the planner's own; a configured
+			// default that cannot apply is not worth a notice on every call.
+			if req.AspectRatioExplicit {
+				notices = append(notices, fmt.Sprintf(
+					"Runware model %q takes the clip's shape from %s and does not accept an output size beside it, so the explicit %q request was not sent.",
+					req.Model, runwareShapeSource(referenceGuided, req.Keyframes), req.AspectRatio))
+			}
 			if tier != "" {
 				if prop, ok := schema.property("resolution"); ok {
 					if canonical, allowed := enumValueFor(prop, tier); allowed {
@@ -374,7 +389,11 @@ func resolveRunwareVideoTask(schema *ModelInputSchema, req VideoGenerateRequest)
 				}
 			}
 			if !tierSent {
-				if w, h, ok := runwareVideoDimensions(schema, shapeAspect, tier); ok {
+				if sizeOK {
+					// An image turn shaped from an aspect: a size the model's
+					// own rules allow beside its inputs.
+					task["width"], task["height"] = sizeW, sizeH
+				} else if w, h, ok := runwareVideoDimensions(schema, shapeAspect, tier); ok {
 					task["width"], task["height"] = w, h
 				} else if aspect := aspectToken; aspect != "" && !isAutoAspectRatio(aspect) && shapeExplicit && schema != nil {
 					if prop, ok := schema.property("resolution"); ok {

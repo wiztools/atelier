@@ -84,7 +84,13 @@ const runwareSeedanceSchemaFixture = `{"components":{"schemas":{"RequestBody":{"
 // two-member tier enum capping at 768p — no H3 variant offers 1080p — beside
 // the same width/height preset pairs, among them a ratio-EXACT 480p preset
 // (864x480 = 1.8) that a ratio-first snap at 16:9 would pick over the
-// slightly-off 768p one (1344x768 = 1.75) no matter the requested tier.
+// slightly-off 768p one (1344x768 = 1.75) no matter the requested tier. The
+// two cross-field rules the shape rule reads ride along as the live schema
+// declares them (the property parse keeps them, runware_schema_rules.go
+// evaluates them): a width/height is forbidden beside a start frame, and the
+// resolution preset is valid only beside one — verified live 2026-11-24,
+// where a width beside a square start frame answered "Unsupported use of
+// 'height' parameter".
 const runwareH3FastSchemaFixture = `{"components":{"schemas":{"RequestBody":{"type":"array","items":{
   "type":"object","additionalProperties":false,
   "properties":{
@@ -112,7 +118,12 @@ const runwareH3FastSchemaFixture = `{"components":{"schemas":{"RequestBody":{"ty
      {"properties":{"width":{"const":768},"height":{"const":1024}}},
      {"properties":{"width":{"const":768},"height":{"const":1344}}},
      {"properties":{"width":{"const":1792},"height":{"const":768}}}
-   ]}}]}}}}}`
+   ]}},
+   {"if":{"properties":{"inputs":{"required":["frameImages"]}},"required":["inputs"]},
+    "then":{"not":{"anyOf":[{"required":["width"]},{"required":["height"]}]}}},
+   {"if":{"required":["resolution"]},
+    "then":{"properties":{"inputs":{"required":["frameImages"]}},"required":["inputs"]}}
+  ]}}}}}`
 
 // runwareVeoSchemaFixture trims the real google-veo-3-1 schema: the extend
 // contract — inputs.video is the continuation source, duration is an enum,
@@ -192,6 +203,100 @@ const runwareSeedance1ProSchemaFixture = `{"components":{"schemas":{"RequestBody
      {"properties":{"width":{"const":1920},"height":{"const":1088}}},
      {"properties":{"width":{"const":2176},"height":{"const":928}}}
    ]}}]}}}}}`
+
+// runwarePixVerseV6SchemaFixture trims the real pixverse-v6 schema around the
+// rule that matters to the shape rule: ANY input medium (frames or reference
+// images) forbids width/height, so the resolution preset is the only size
+// signal beside media. PixVerse V6's endpoint accepted a size beside a
+// reference image anyway when tried live (2026-11-24) — enforcement is not
+// uniform, MiniMax H3 refused one beside a frame — and the resolver follows
+// the schema in both cases.
+const runwarePixVerseV6SchemaFixture = `{"components":{"schemas":{"RequestBody":{"type":"array","items":{
+  "type":"object","additionalProperties":false,
+  "properties":{
+    "positivePrompt":{"type":"string"},
+    "duration":{"type":"integer","minimum":1,"maximum":15,"default":5},
+    "width":{"type":"integer"},"height":{"type":"integer"},
+    "resolution":{"type":"string","enum":["360p","540p","720p","1080p"],"default":"720p"},
+    "outputFormat":{"type":"string","enum":["MP4","WEBM","MOV"]},
+    "deliveryMethod":{"type":"string","enum":["sync","async"],"default":"async"},
+    "includeCost":{"type":"boolean"},
+    "inputs":{"type":"object","properties":{
+      "frameImages":{"type":"array","maxItems":2,"items":{"type":"string"}},
+      "referenceImages":{"type":"array","maxItems":10,"items":{"type":"string"}}}}
+  },
+  "allOf":[
+   {"dependentRequired":{"width":["height"],"height":["width"]}},
+   {"if":{"properties":{"inputs":{"anyOf":[{"required":["frameImages"]},{"required":["referenceImages"]}]}},"required":["inputs"]},"then":{"not":{"anyOf":[{"required":["width"]},{"required":["height"]}]}},"else":{"required":["width","height"]}},
+   {"not":{"allOf":[{"required":["resolution"]},{"anyOf":[{"required":["width"]},{"required":["height"]}]}]}},
+   {"if":{"anyOf":[{"required":["width"]},{"required":["height"]}]},
+    "then":{"oneOf":[
+     {"properties":{"width":{"const":640},"height":{"const":360}}},
+     {"properties":{"width":{"const":480},"height":{"const":360}}},
+     {"properties":{"width":{"const":360},"height":{"const":360}}},
+     {"properties":{"width":{"const":360},"height":{"const":480}}},
+     {"properties":{"width":{"const":360},"height":{"const":640}}},
+     {"properties":{"width":{"const":540},"height":{"const":540}}},
+     {"properties":{"width":{"const":540},"height":{"const":720}}},
+     {"properties":{"width":{"const":540},"height":{"const":960}}},
+     {"properties":{"width":{"const":720},"height":{"const":540}}},
+     {"properties":{"width":{"const":720},"height":{"const":720}}},
+     {"properties":{"width":{"const":720},"height":{"const":960}}},
+     {"properties":{"width":{"const":720},"height":{"const":1280}}},
+     {"properties":{"width":{"const":1280},"height":{"const":720}}},
+     {"properties":{"width":{"const":960},"height":{"const":720}}},
+     {"properties":{"width":{"const":1920},"height":{"const":1080}}},
+     {"properties":{"width":{"const":1080},"height":{"const":1920}}}
+   ]}}
+  ]}}}}}`
+
+// runwareViduQ2ProSchemaFixture trims the real vidu-q2-pro schema (its
+// general preset list cut to ten of twenty) around the rule that matters to
+// the shape rule: beside a start frame only FIVE sizes are allowed, a subset
+// of its presets, and the model has no resolution preset at all — pixels are
+// its only size signal.
+const runwareViduQ2ProSchemaFixture = `{"components":{"schemas":{"RequestBody":{"type":"array","items":{
+  "type":"object","additionalProperties":false,
+  "properties":{
+    "positivePrompt":{"type":"string"},
+    "duration":{"type":"integer","minimum":1,"maximum":8,"default":5},
+    "width":{"type":"integer"},"height":{"type":"integer"},
+    "outputFormat":{"type":"string","enum":["MP4","WEBM","MOV"]},
+    "deliveryMethod":{"type":"string","enum":["sync","async"],"default":"async"},
+    "includeCost":{"type":"boolean"},
+    "inputs":{"type":"object","properties":{
+      "frameImages":{"type":"array","maxItems":2,"items":{"type":"string"}},
+      "referenceImages":{"type":"array","maxItems":7,"items":{"type":"string"}}}}
+  },
+  "allOf":[
+   {"dependentRequired":{"width":["height"],"height":["width"]}},
+   {"if":{"not":{"properties":{"inputs":{"required":["frameImages"]}},"required":["inputs"]}},
+    "then":{"required":["width","height"]}},
+   {"oneOf":[{"properties":{"inputs":{"required":["frameImages"]}},"required":["inputs"]},
+             {"properties":{"inputs":{"required":["referenceImages"]}},"required":["inputs"]}]},
+   {"if":{"anyOf":[{"required":["width"]},{"required":["height"]}]},
+    "then":{"oneOf":[
+     {"properties":{"width":{"const":640},"height":{"const":352}}},
+     {"properties":{"width":{"const":544},"height":{"const":400}}},
+     {"properties":{"width":{"const":480},"height":{"const":480}}},
+     {"properties":{"width":{"const":400},"height":{"const":544}}},
+     {"properties":{"width":{"const":352},"height":{"const":640}}},
+     {"properties":{"width":{"const":1280},"height":{"const":720}}},
+     {"properties":{"width":{"const":960},"height":{"const":960}}},
+     {"properties":{"width":{"const":720},"height":{"const":1280}}},
+     {"properties":{"width":{"const":1920},"height":{"const":1080}}},
+     {"properties":{"width":{"const":1080},"height":{"const":1920}}}
+   ]}},
+   {"if":{"properties":{"inputs":{"required":["frameImages"]}},"required":["inputs"],
+        "anyOf":[{"required":["width"]},{"required":["height"]}]},
+    "then":{"oneOf":[
+     {"properties":{"width":{"const":720},"height":{"const":720}}},
+     {"properties":{"width":{"const":1280},"height":{"const":720}}},
+     {"properties":{"width":{"const":720},"height":{"const":1280}}},
+     {"properties":{"width":{"const":1920},"height":{"const":1080}}},
+     {"properties":{"width":{"const":1080},"height":{"const":1920}}}
+   ]}}
+  ]}}}}}`
 
 // runwareSpeechSchemaFixture trims the real minimax-speech-2-8 schema: the
 // nested speech object with a voice enum, no emotion or speed dials, dataURI
@@ -844,22 +949,184 @@ func TestResolveRunwareVideoTaskReferenceAspect(t *testing.T) {
 		t.Fatalf("resolution = %+v, want the tier alone on a model without pixels", task["resolution"])
 	}
 
-	// A frame turn is untouched by the rule: it inherits the frame's
-	// orientation with the tier on resolution, whether or not the planner
-	// named a ratio.
-	task, _, _, err = resolveRunwareVideoTask(schema, VideoGenerateRequest{
-		Model: "klingai:kling-video@4.0", Prompt: "animate",
-		AspectRatio: "9:16", AspectRatioExplicit: true, ConfigAspectRatio: "16:9", Resolution: "1080p",
+	// A model whose schema forbids a size beside reference images keeps the
+	// tier-alone rule: the configured default cannot apply there, and only
+	// the planner's own ask is worth a notice.
+	pixverse := parseRunwareFixture(t, runwarePixVerseV6SchemaFixture)
+	task, notices, _, err = resolveRunwareVideoTask(pixverse, VideoGenerateRequest{
+		Model: "pixverse:1@8", Prompt: "p", VideoRole: "reference",
+		AspectRatio: "16:9", ConfigAspectRatio: "9:16", Resolution: "720p",
 		Images: []string{reference},
 	})
 	if err != nil {
-		t.Fatalf("resolve frame turn: %v", err)
+		t.Fatalf("resolve reference turn on a model forbidding sizes: %v", err)
 	}
 	if _, ok := task["width"]; ok {
-		t.Fatalf("a frame turn inherits its frame; pixels must not ride, got %vx%v", task["width"], task["height"])
+		t.Fatalf("the schema forbids a size beside reference images here, got %vx%v", task["width"], task["height"])
 	}
-	if task["resolution"] != "1080p" {
-		t.Fatalf("resolution = %+v, want the tier on a frame turn", task["resolution"])
+	if task["resolution"] != "720p" {
+		t.Fatalf("resolution = %+v, want the tier alone", task["resolution"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("a configured default that cannot apply is not worth a notice, got %v", notices)
+	}
+	task, notices, _, err = resolveRunwareVideoTask(pixverse, VideoGenerateRequest{
+		Model: "pixverse:1@8", Prompt: "p", VideoRole: "reference",
+		AspectRatio: "9:16", AspectRatioExplicit: true, ConfigAspectRatio: "16:9", Resolution: "720p",
+		Images: []string{reference},
+	})
+	if err != nil {
+		t.Fatalf("resolve explicit reference turn on a model forbidding sizes: %v", err)
+	}
+	if _, ok := task["width"]; ok {
+		t.Fatalf("the schema forbids a size beside reference images here, got %vx%v", task["width"], task["height"])
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], "takes the clip's shape from its reference images") || !strings.Contains(notices[0], `explicit "9:16" request was not sent`) {
+		t.Fatalf("the planner's own ask must be answered with one notice naming it, got %v", notices)
+	}
+}
+
+// TestResolveRunwareVideoTaskFrameAspect pins the frame-turn side of the
+// shape rule. A frame turn inherits by default; with an explicit ratio it is
+// shaped like a reference turn, but only where the model's own schema accepts
+// a size beside the frames — the catalog splits on that, and the endpoint
+// enforces it for some models and not others. Verified live 2026-11-24 with a
+// square start frame asked for as 9:16: Kling 4.0 and Seedance 2.0 delivered
+// 720x1280, MiniMax H3 Fast answered "Unsupported use of 'height' parameter"
+// exactly as its schema says.
+func TestResolveRunwareVideoTaskFrameAspect(t *testing.T) {
+	const frame = "data:image/png;base64,QUJD"
+
+	// Kling 4.0 accepts a size beside a frame: the explicit ratio rides as
+	// one and the tier yields to it (the two are never written together).
+	schema := parseRunwareFixture(t, runwareKlingSchemaFixture)
+	task, notices, _, err := resolveRunwareVideoTask(schema, VideoGenerateRequest{
+		Model: "klingai:kling-video@4.0", Prompt: "animate",
+		AspectRatio: "9:16", AspectRatioExplicit: true, ConfigAspectRatio: "16:9", Resolution: "1080p",
+		Images: []string{frame},
+	})
+	if err != nil {
+		t.Fatalf("resolve explicit frame turn: %v", err)
+	}
+	if task["width"] != 1080 || task["height"] != 1920 {
+		t.Fatalf("size = %vx%v, want the 1080x1920 preset for an explicit 9:16", task["width"], task["height"])
+	}
+	if _, ok := task["resolution"]; ok {
+		t.Fatalf("resolution must not ride beside width/height, got %+v", task["resolution"])
+	}
+	if inputs, _ := task["inputs"].(map[string]any); len(inputs["frameImages"].([]string)) != 1 {
+		t.Fatalf("the image must still be the start frame, got %+v", task["inputs"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("a size the model offers should be notice-free, got %v", notices)
+	}
+
+	// A start→end pair is shaped the same way.
+	task, _, _, err = resolveRunwareVideoTask(schema, VideoGenerateRequest{
+		Model: "klingai:kling-video@4.0", Prompt: "morph", Keyframes: true,
+		AspectRatio: "16:9", AspectRatioExplicit: true, Resolution: "720p",
+		Images: []string{frame, "data:image/png;base64,REVG"},
+	})
+	if err != nil {
+		t.Fatalf("resolve explicit keyframe turn: %v", err)
+	}
+	if task["width"] != 1280 || task["height"] != 720 {
+		t.Fatalf("size = %vx%v, want 1280x720 for an explicit 16:9 at 720p", task["width"], task["height"])
+	}
+
+	// Without an explicit ratio nothing changes: the frame's shape is kept
+	// and the tier rides.
+	task, notices, _, err = resolveRunwareVideoTask(schema, VideoGenerateRequest{
+		Model: "klingai:kling-video@4.0", Prompt: "animate",
+		AspectRatio: "16:9", ConfigAspectRatio: "9:16", Resolution: "1080p",
+		Images: []string{frame},
+	})
+	if err != nil {
+		t.Fatalf("resolve plain frame turn: %v", err)
+	}
+	if _, ok := task["width"]; ok {
+		t.Fatalf("a frame turn without an explicit ratio keeps its frame's shape, got %vx%v", task["width"], task["height"])
+	}
+	if task["resolution"] != "1080p" || len(notices) != 0 {
+		t.Fatalf("resolution = %+v notices = %v, want the tier alone and no notices", task["resolution"], notices)
+	}
+
+	// MiniMax H3 forbids a size beside a frame: the ratio is not sent, the
+	// tier still rides, and the reply says why.
+	h3 := parseRunwareFixture(t, runwareH3FastSchemaFixture)
+	task, notices, _, err = resolveRunwareVideoTask(h3, VideoGenerateRequest{
+		Model: "minimax:h3@fast", Prompt: "animate",
+		AspectRatio: "9:16", AspectRatioExplicit: true, Resolution: "768p",
+		Images: []string{frame},
+	})
+	if err != nil {
+		t.Fatalf("resolve explicit frame turn on a model forbidding sizes: %v", err)
+	}
+	if _, ok := task["width"]; ok {
+		t.Fatalf("the schema forbids a size beside a frame here, got %vx%v", task["width"], task["height"])
+	}
+	if task["resolution"] != "768p" {
+		t.Fatalf("resolution = %+v, want the tier alone", task["resolution"])
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], "takes the clip's shape from the start frame") || !strings.Contains(notices[0], `explicit "9:16" request was not sent`) {
+		t.Fatalf("the planner's own ask must be answered with one notice naming it, got %v", notices)
+	}
+
+	// A pair names both frames.
+	_, notices, _, err = resolveRunwareVideoTask(h3, VideoGenerateRequest{
+		Model: "minimax:h3@fast", Prompt: "morph", Keyframes: true,
+		AspectRatio: "9:16", AspectRatioExplicit: true, Resolution: "768p",
+		Images: []string{frame, "data:image/png;base64,REVG"},
+	})
+	if err != nil {
+		t.Fatalf("resolve explicit keyframe turn on a model forbidding sizes: %v", err)
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], "the start and end frames") {
+		t.Fatalf("a pair must be named as both frames, got %v", notices)
+	}
+
+	// Vidu Q2 Pro whitelists five sizes beside a frame. Both of its common
+	// asks already land on one of them — 1080x1920 at 1080p, and 720x1280
+	// where the 480p class has no portrait shape to offer — so nothing is
+	// substituted and nothing needs saying.
+	vidu := parseRunwareFixture(t, runwareViduQ2ProSchemaFixture)
+	for _, tc := range []struct {
+		tier  string
+		wantW int
+		wantH int
+	}{
+		{"1080p", 1080, 1920},
+		{"480p", 720, 1280},
+	} {
+		task, notices, _, err := resolveRunwareVideoTask(vidu, VideoGenerateRequest{
+			Model: "vidu:3@1", Prompt: "animate",
+			AspectRatio: "9:16", AspectRatioExplicit: true, Resolution: tc.tier,
+			Images: []string{frame},
+		})
+		if err != nil {
+			t.Fatalf("vidu %s: resolve: %v", tc.tier, err)
+		}
+		if task["width"] != tc.wantW || task["height"] != tc.wantH || len(notices) != 0 {
+			t.Fatalf("vidu %s: size = %vx%v notices = %v, want %dx%d with no notice", tc.tier, task["width"], task["height"], notices, tc.wantW, tc.wantH)
+		}
+	}
+
+	// Where the normal pick falls outside what a frame allows, the ask moves
+	// to the nearest size that is allowed and says so.
+	whitelist := parseRunwareFixture(t, runwareWhitelistSchema)
+	task, notices, _, err = resolveRunwareVideoTask(whitelist, VideoGenerateRequest{
+		Model: "vidu:3@1", Prompt: "animate",
+		AspectRatio: "16:9", AspectRatioExplicit: true, Resolution: "528p",
+		Images: []string{frame},
+	})
+	if err != nil {
+		t.Fatalf("resolve on a whitelisting model: %v", err)
+	}
+	if task["width"] != 1280 || task["height"] != 720 {
+		t.Fatalf("size = %vx%v, want the nearest allowed 1280x720", task["width"], task["height"])
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], "does not offer 16:9 beside the start frame; generated at its nearest allowed size, 1280x720") {
+		t.Fatalf("the substitution must say so, got %v", notices)
 	}
 }
 

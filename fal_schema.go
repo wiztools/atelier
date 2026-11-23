@@ -74,7 +74,15 @@ type ModelInputSchema struct {
 	// body failed at fal three rounds in a row). Resolvers read it through
 	// unfillableRequiredInputs to refuse before any money moves.
 	Required []string
-	order    []string
+	// AllOf keeps the input schema's cross-field rules verbatim (JSON Schema
+	// `allOf`), which a property-level parse cannot express. Runware's
+	// packagings state their real contracts there — a size forbidden beside a
+	// start frame, sizes whitelisted beside frames, resolution requiring input
+	// media — and an endpoint that enforces them answers a 400 before anything
+	// is generated. Nil when the schema declares none; only runwareTaskValid
+	// reads them.
+	AllOf []json.RawMessage
+	order []string
 }
 
 func (s *ModelInputSchema) property(name string) (SchemaProperty, bool) {
@@ -176,6 +184,7 @@ func schemaRefTarget(ref string, components map[string]json.RawMessage) (json.Ra
 type openAPIModel struct {
 	Properties map[string]json.RawMessage `json:"properties"`
 	Required   []string                   `json:"required"`
+	AllOf      []json.RawMessage          `json:"allOf"`
 }
 
 // parseModelInputSchema finds the single `*Input` schema in the doc and
@@ -229,7 +238,7 @@ func parseModelInputSchema(raw []byte) (*ModelInputSchema, error) {
 			order = append(order, name)
 		}
 	}
-	schema := &ModelInputSchema{Properties: map[string]SchemaProperty{}, Required: model.Required, order: order}
+	schema := &ModelInputSchema{Properties: map[string]SchemaProperty{}, Required: model.Required, AllOf: model.AllOf, order: order}
 	for _, name := range order {
 		schema.Properties[name] = toSchemaProperty(name, model.Properties[name], doc.Components.Schemas, 0)
 	}
