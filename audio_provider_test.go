@@ -2,7 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"net/http"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -706,5 +711,187 @@ func TestAudioExtendFollowsAudioProvider(t *testing.T) {
 	}
 	if command := strings.Join(activity.Command, " "); command != "replicate extend-audio acme/continuer" {
 		t.Fatalf("replicate extend activity command = %q", command)
+	}
+}
+
+// runFalAudioExtend drives extend_audio's fal route once over a stub transport,
+// returning what the source upload and the queue submission carried. The
+// configured ffmpeg is a fake that copies its input, so the hosted bytes are
+// exactly what the conversion produced.
+func runFalAudioExtend(t *testing.T, source string) (uploadName, uploadType string, submitted map[string]any, notices []string, err error) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	keyring.MockInit()
+	if err := saveFalAPIKey("fal-test-key"); err != nil {
+		t.Fatalf("saveFalAPIKey: %v", err)
+	}
+	t.Cleanup(func() { _ = clearFalAPIKey() })
+
+	config := mergeAppConfig(defaultAppConfig())
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "artifacts"),
+	}
+	stubExtendFFmpeg(t, &config, filepath.Join(home, "ffmpeg"), "ffmpeg", extendTranscodeScript(filepath.Join(home, "convert.args")))
+
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if resp, ok := falTestPlatformResponse(req); ok {
+			return resp, nil
+		}
+		switch {
+		case strings.Contains(req.URL.String(), "storage/auth/token"):
+			return jsonResponse(`{"token":"cdn-test-token","token_type":"Bearer","base_url":"https://v3.test.fal.media"}`), nil
+		case strings.HasSuffix(req.URL.Path, "/files/upload"):
+			uploadName = req.Header.Get("X-Fal-File-Name")
+			uploadType = req.Header.Get("Content-Type")
+			return jsonResponse(`{"access_url":"https://v3.test.fal.media/files/abc/` + uploadName + `","uploaded":true}`), nil
+		case req.Method == http.MethodGet && req.URL.Query().Get("endpoint_id") == defaultFalAudioExtendModel:
+			raw, err := os.ReadFile(filepath.Join("testdata", "fal-schemas", "stable-audio-25-inpaint.json"))
+			if err != nil {
+				t.Fatalf("read the pinned schema: %v", err)
+			}
+			return jsonResponse(string(raw)), nil
+		case strings.Contains(req.URL.Host, "fal.run"):
+			switch {
+			case req.Method == http.MethodPost:
+				if err := json.NewDecoder(req.Body).Decode(&submitted); err != nil {
+					t.Fatalf("decode fal submit body: %v", err)
+				}
+				return jsonResponse(`{"request_id":"req-extend-1"}`), nil
+			case strings.HasSuffix(req.URL.Path, "/status"):
+				return jsonResponse(`{"status":"COMPLETED"}`), nil
+			case strings.HasSuffix(req.URL.Path, "/requests/req-extend-1"):
+				return jsonResponse(`{"audio":{"url":"https://queue.fal.run/extended.mp3","content_type":"audio/mpeg"},"seed":7}`), nil
+			}
+			// Download of the generated clip.
+			return audioResp(tinyMP3(), "audio/mpeg"), nil
+		}
+		t.Fatalf("unexpected request %s %s", req.Method, req.URL)
+		return nil, nil
+	})
+	gateway := newToolGateway(app, config)
+	generated, err := gateway.tools.GenerateAudioExtend(context.Background(), AudioExtendRequest{
+		Model: defaultFalAudioExtendModel, Prompt: "more rain", Duration: "4",
+		SourceAudio: source, SourceDurationSeconds: 4.48,
+	})
+	return uploadName, uploadType, submitted, generated.Notices, err
+}
+
+// TestAudioExtendConvertsAACSourceBeforeUpload drives extend_audio's fal route
+// end to end over a stub transport. conv_78f17db8d3f2125ded13e263: the
+// endpoint answered "Format not recognised." for the M4A an earlier turn
+// extracted, because its worker decodes with libsndfile. The clip is now
+// re-encoded to WAV through local ffmpeg before it is hosted, the upload
+// carries the container the bytes really are, and the conversion rides a
+// notice. A container the models decode is hosted untouched under its own name.
+func TestAudioExtendConvertsAACSourceBeforeUpload(t *testing.T) {
+	t.Run("AAC becomes WAV before the upload", func(t *testing.T) {
+		uploadName, uploadType, submitted, notices, err := runFalAudioExtend(t, m4aDataURL())
+		if err != nil {
+			t.Fatalf("GenerateAudioExtend: %v", err)
+		}
+		if uploadName != "source-audio.wav" || uploadType != "audio/wav" {
+			t.Fatalf("upload = %q (%s), want the converted clip hosted as a WAV", uploadName, uploadType)
+		}
+		want := map[string]any{
+			"audio_url":     "https://v3.test.fal.media/files/abc/source-audio.wav",
+			"prompt":        "more rain",
+			"mask_start":    float64(4),
+			"mask_end":      float64(8),
+			"seconds_total": float64(8),
+		}
+		if !reflect.DeepEqual(submitted, want) {
+			t.Fatalf("submitted body = %v, want %v", submitted, want)
+		}
+		if len(notices) != 1 || !strings.Contains(notices[0], "AAC/M4A to WAV") {
+			t.Fatalf("notices = %v, want the conversion note", notices)
+		}
+	})
+
+	t.Run("a decodable clip is hosted under its own name", func(t *testing.T) {
+		uploadName, uploadType, submitted, notices, err := runFalAudioExtend(t, "data:audio/flac;base64,QUJD")
+		if err != nil {
+			t.Fatalf("GenerateAudioExtend: %v", err)
+		}
+		if uploadName != "source-audio.flac" || uploadType != "audio/flac" {
+			t.Fatalf("upload = %q (%s), want the FLAC hosted as itself", uploadName, uploadType)
+		}
+		if submitted["audio_url"] != "https://v3.test.fal.media/files/abc/source-audio.flac" {
+			t.Fatalf("submitted body = %v, want the hosted FLAC", submitted)
+		}
+		if len(notices) != 0 {
+			t.Fatalf("notices = %v, want none without a conversion", notices)
+		}
+	})
+}
+
+// TestAudioExtendReplicateConvertsAACSource drives the replicate route the
+// same way: the continuation model receives the converted WAV — inline, as a
+// small payload — and the conversion rides a notice there too.
+func TestAudioExtendReplicateConvertsAACSource(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	keyring.MockInit()
+	if err := saveReplicateAPIKey("replicate-test-key"); err != nil {
+		t.Fatalf("saveReplicateAPIKey: %v", err)
+	}
+	t.Cleanup(func() { _ = clearReplicateAPIKey() })
+
+	config := defaultAppConfig()
+	config.Models.AudioProvider = "replicate"
+	config = mergeAppConfig(config)
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "artifacts"),
+	}
+	stubExtendFFmpeg(t, &config, filepath.Join(home, "ffmpeg"), "ffmpeg", extendTranscodeScript(filepath.Join(home, "convert.args")))
+
+	var input map[string]any
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/models/"+defaultReplicateAudioExtendModel:
+			return jsonResponse(`{"latest_version":{"openapi_schema":` + replicateContinuationSchema + `}}`), nil
+		case req.Method == http.MethodPost && req.URL.Path == "/v1/models/"+defaultReplicateAudioExtendModel+"/predictions":
+			var body struct {
+				Input map[string]any `json:"input"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				t.Fatalf("decode the prediction input: %v", err)
+			}
+			input = body.Input
+			return jsonResponse(`{"id":"pred-1","status":"starting"}`), nil
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/predictions/pred-1":
+			return jsonResponse(`{"id":"pred-1","status":"succeeded","output":"https://replicate.delivery/pbxt/extended.mp3"}`), nil
+		case req.Method == http.MethodGet && req.URL.Path == "/pbxt/extended.mp3":
+			return audioResp(tinyMP3(), "audio/mpeg"), nil
+		}
+		t.Fatalf("unexpected request %s %s", req.Method, req.URL)
+		return nil, nil
+	})
+	gateway := newToolGateway(app, config)
+	generated, err := gateway.tools.GenerateAudioExtend(context.Background(), AudioExtendRequest{
+		Model: defaultReplicateAudioExtendModel, Prompt: "more rain", Duration: "4",
+		SourceAudio: m4aDataURL(), SourceDurationSeconds: 4.48,
+	})
+	if err != nil {
+		t.Fatalf("GenerateAudioExtend: %v", err)
+	}
+	if input["continuation"] != true {
+		t.Fatalf("prediction input = %v, want a continuation", input)
+	}
+	hosted, _ := input["input_audio"].(string)
+	payload, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(hosted, "data:audio/wav;base64,"))
+	if err != nil || !strings.HasPrefix(hosted, "data:audio/wav;base64,") || string(payload) != "fake aac payload" {
+		t.Fatalf("input_audio = %q err=%v, want the converted clip as a WAV data URL carrying the M4A's bytes", hosted, err)
+	}
+	if len(generated.Notices) != 1 || !strings.Contains(generated.Notices[0], "AAC/M4A to WAV") {
+		t.Fatalf("notices = %v, want the conversion note", generated.Notices)
 	}
 }

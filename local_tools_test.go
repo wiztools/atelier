@@ -24,6 +24,7 @@ import (
 
 	"github.com/zalando/go-keyring"
 
+	"atelier/internal/mediasniff"
 	"atelier/internal/mediasniff/mediasnifftest"
 )
 
@@ -749,6 +750,218 @@ func TestWhisperCPPNeedsTranscode(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := whisperCPPNeedsTranscode(tc.mediaType); got != tc.want {
 				t.Fatalf("whisperCPPNeedsTranscode(%q) = %v, want %v", tc.mediaType, got, tc.want)
+			}
+		})
+	}
+}
+
+// extendTranscodeScript fakes the extend conversion pass: it records the full
+// argv at a path the test chooses (the helper removes its own staging
+// directory, so the argv cannot live beside the output) and copies the -i
+// source onto the output, so the payload proves which file fed the conversion.
+func extendTranscodeScript(argsPath string) string {
+	return `#!/bin/sh
+prev=""
+input=""
+for a in "$@"; do
+  if [ "$prev" = "-i" ]; then input="$a"; fi
+  prev="$a"
+done
+for a in "$@"; do out="$a"; done
+printf '%s' "$*" > '` + argsPath + `'
+cp "$input" "$out"
+`
+}
+
+// stubExtendFFmpeg points config's ffmpeg at a fake script and makes that
+// exact path resolve through the lookup seam TestMain pins off, so a test
+// never depends on a real install.
+func stubExtendFFmpeg(t *testing.T, config *AppConfig, dir, name, script string) string {
+	t.Helper()
+	binary := writeFakeWhisper(t, dir, name, script)
+	config.Providers.Local.FFmpeg.Binary = binary
+	stubLocalLookup(t, map[string]string{binary: binary})
+	return binary
+}
+
+// TestCloudExtendUndecodable pins the container gate: the AAC family is the
+// one the cloud extend workers' libsndfile cannot read, and every other type —
+// a typeless reference included — passes through.
+func TestCloudExtendUndecodable(t *testing.T) {
+	cases := []struct {
+		name      string
+		mediaType string
+		want      bool
+	}{
+		{"wav passes through", "audio/wav", false},
+		{"mp3 passes through", "audio/mpeg", false},
+		{"flac passes through", "audio/flac", false},
+		{"ogg passes through", "audio/ogg", false},
+		{"opus passes through", "audio/opus", false},
+		{"no type keeps the attempt-anyway behavior", "", false},
+		{"m4a converts", "audio/mp4", true},
+		{"m4a alias converts", "audio/x-m4a", true},
+		{"aac converts", "audio/aac", true},
+		{"case and padding are ignored", " Audio/MP4 ", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cloudExtendUndecodable(tc.mediaType); got != tc.want {
+				t.Fatalf("cloudExtendUndecodable(%q) = %v, want %v", tc.mediaType, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPrepareAudioExtendSource pins conv_78f17db8d3f2125ded13e263's fix: an
+// AAC/M4A clip is re-encoded to WAV through local ffmpeg before the cloud
+// extend models see it, because their workers decode with libsndfile. Every
+// decodable container passes through untouched, and a missing or failing
+// ffmpeg keeps the original clip under no notice so the model's own error
+// surfaces — the pre-conversion status quo, fail-soft like the whisper pass.
+func TestPrepareAudioExtendSource(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	m4a := m4aDataURL()
+	payload, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(m4a, "data:audio/mp4;base64,"))
+	if err != nil {
+		t.Fatalf("decode the M4A fixture: %v", err)
+	}
+	wantWAV := "data:audio/wav;base64," + base64.StdEncoding.EncodeToString(payload)
+
+	t.Run("AAC converts to WAV through ffmpeg", func(t *testing.T) {
+		argsPath := filepath.Join(dir, "convert.args")
+		config := defaultAppConfig()
+		stubExtendFFmpeg(t, &config, filepath.Join(dir, "ff-convert"), "ffmpeg", extendTranscodeScript(argsPath))
+		source, notice := prepareAudioExtendSource(ctx, config, m4a)
+		if source != wantWAV {
+			t.Fatalf("source = %q, want the converted clip as a WAV data URL", source)
+		}
+		if !strings.Contains(notice, "AAC/M4A to WAV") {
+			t.Fatalf("notice = %q, want the conversion note", notice)
+		}
+		args, err := os.ReadFile(argsPath)
+		if err != nil {
+			t.Fatalf("the fake ffmpeg never ran: %v", err)
+		}
+		for _, want := range []string{"-y -i ", "-vn", "-c:a pcm_s16le", "atelier-extend-transcode-", "/source.m4a ", "/source.wav"} {
+			if !strings.Contains(string(args), want) {
+				t.Errorf("ffmpeg argv %q missing %q", args, want)
+			}
+		}
+		// Nothing outlives the conversion: the staged M4A and the WAV go with
+		// the staging directory.
+		if left, _ := filepath.Glob(filepath.Join(os.TempDir(), "atelier-extend-transcode-*")); len(left) != 0 {
+			t.Fatalf("the staging directory survived the conversion: %v", left)
+		}
+	})
+
+	t.Run("an artifact-path AAC source converts too", func(t *testing.T) {
+		clip := filepath.Join(dir, "clip.m4a")
+		if err := os.WriteFile(clip, payload, 0o644); err != nil {
+			t.Fatalf("write the clip: %v", err)
+		}
+		argsPath := filepath.Join(dir, "path.args")
+		config := defaultAppConfig()
+		stubExtendFFmpeg(t, &config, filepath.Join(dir, "ff-path"), "ffmpeg", extendTranscodeScript(argsPath))
+		source, notice := prepareAudioExtendSource(ctx, config, artifactPrefix+clip)
+		if source != wantWAV || !strings.Contains(notice, "AAC/M4A to WAV") {
+			t.Fatalf("source = %q notice = %q, want the artifact converted under the note", source, notice)
+		}
+		if args, err := os.ReadFile(argsPath); err != nil || !strings.Contains(string(args), "/source.m4a ") {
+			t.Fatalf("ffmpeg argv = %q err=%v, want the artifact staged under its own extension", args, err)
+		}
+	})
+
+	t.Run("decodable containers pass through untouched", func(t *testing.T) {
+		sentinel := filepath.Join(dir, "ffmpeg-ran")
+		config := defaultAppConfig()
+		stubExtendFFmpeg(t, &config, filepath.Join(dir, "ff-untouched"), "ffmpeg", "#!/bin/sh\ntouch '"+sentinel+"'\nexit 1\n")
+		for _, source := range []string{
+			wavDataURL(),
+			"data:audio/mpeg;base64,QUJD",
+			"data:audio/flac;base64,QUJD",
+			"data:audio/ogg;base64,QUJD",
+			"QUJD", // bare base64 names no container
+		} {
+			if got, notice := prepareAudioExtendSource(ctx, config, source); got != source || notice != "" {
+				t.Fatalf("source %q: got %q notice %q, want it untouched", source, got, notice)
+			}
+		}
+		if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+			t.Fatal("ffmpeg must not run for a container the models decode")
+		}
+	})
+
+	t.Run("a failing ffmpeg keeps the original clip", func(t *testing.T) {
+		config := defaultAppConfig()
+		stubExtendFFmpeg(t, &config, filepath.Join(dir, "ff-broken"), "ffmpeg", "#!/bin/sh\necho 'conversion boom' >&2\nexit 1\n")
+		if got, notice := prepareAudioExtendSource(ctx, config, m4a); got != m4a || notice != "" {
+			t.Fatalf("got %q notice %q, want the original clip under no notice", got, notice)
+		}
+	})
+
+	t.Run("no ffmpeg keeps the original clip", func(t *testing.T) {
+		stubLocalLookup(t, nil)
+		if got, notice := prepareAudioExtendSource(ctx, defaultAppConfig(), m4a); got != m4a || notice != "" {
+			t.Fatalf("got %q notice %q, want the original clip under no notice", got, notice)
+		}
+	})
+
+	t.Run("an empty source stays empty", func(t *testing.T) {
+		if got, notice := prepareAudioExtendSource(ctx, defaultAppConfig(), "  "); got != "" || notice != "" {
+			t.Fatalf("got %q notice %q, want nothing", got, notice)
+		}
+	})
+}
+
+// TestPrepareAudioExtendSourceRealFFmpeg runs the conversion through a real
+// ffmpeg when one is installed: an AAC clip becomes a WAV the pure-Go sniffer
+// can measure, which the fake-ffmpeg subtests above cannot show.
+func TestPrepareAudioExtendSourceRealFFmpeg(t *testing.T) {
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("no ffmpeg on PATH")
+	}
+	dir := t.TempDir()
+	m4a := filepath.Join(dir, "tone.m4a")
+	if out, err := exec.Command(ffmpeg, "-hide_banner", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.5", "-c:a", "aac", m4a).CombinedOutput(); err != nil {
+		t.Skipf("ffmpeg could not synthesize the fixture: %v (%s)", err, out)
+	}
+	clip, err := os.ReadFile(m4a)
+	if err != nil {
+		t.Fatalf("read the fixture: %v", err)
+	}
+	withRealLocalLookup(t)
+	source, notice := prepareAudioExtendSource(context.Background(), defaultAppConfig(),
+		"data:audio/mp4;base64,"+base64.StdEncoding.EncodeToString(clip))
+	if !strings.Contains(notice, "AAC/M4A to WAV") {
+		t.Fatalf("notice = %q, want the conversion note", notice)
+	}
+	converted, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(source, "data:audio/wav;base64,"))
+	if err != nil {
+		t.Fatalf("decode the converted clip: %v", err)
+	}
+	seconds, ok := mediasniff.AudioDuration(converted)
+	if !ok || !strings.HasPrefix(string(converted), "RIFF") || seconds < 0.4 || seconds > 0.6 {
+		t.Fatalf("converted clip = %d bytes starting %q measuring %v (readable=%v), want about 0.5s of RIFF/WAV",
+			len(converted), converted[:4], seconds, ok)
+	}
+}
+
+// TestAudioUploadFilename pins the upload name: the hosted URL's extension is
+// what the decoder on the other end sees, so an upload takes the extension of
+// the container its reference declares and .mp3 only when it names none.
+func TestAudioUploadFilename(t *testing.T) {
+	for _, tc := range []struct{ name, reference, want string }{
+		{"m4a data URL", m4aDataURL(), "source-audio.m4a"},
+		{"wav data URL", wavDataURL(), "source-audio.wav"},
+		{"artifact path", artifactPrefix + filepath.Join(t.TempDir(), "clip.flac"), "source-audio.flac"},
+		{"bare base64", "QUJD", "source-audio.mp3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := audioUploadFilename("source-audio", tc.reference); got != tc.want {
+				t.Fatalf("audioUploadFilename(%q) = %q, want %q", tc.reference, got, tc.want)
 			}
 		})
 	}

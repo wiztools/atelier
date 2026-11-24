@@ -538,22 +538,41 @@ func resolveAudioBody(schema *ModelInputSchema, req AudioGenerateRequest, ov Ove
 }
 
 // audioExtendFlavor classifies an extend endpoint by id so the resolver can
-// apply each one's native extension controls. The three flavors' input names
-// are verified against fal's published schemas (OpenAPI for ace-step and
-// stable-audio, llms.txt for sonauto); "generic" covers any other endpoint
-// chosen via the model override and resolves through the synonym table.
+// apply each one's native extension controls. The flavors' input names are
+// verified against fal's published schemas (OpenAPI for the stable-audio and
+// ace-step endpoints, all pinned in testdata/fal-schemas; llms.txt for
+// sonauto). The stable-audio and ace-step flavors match their exact id: a
+// loose keyword match is how fal-ai/stable-audio-3/small/music/audio-outpainting
+// — "audio-outpaint" is a prefix of "audio-outpainting" — was built in
+// fal-ai/ace-step/audio-outpaint's shape, the planner's description went out as
+// `tags` with no `prompt`, and fal answered the same 422 three rounds running
+// (conv_5745231eed289e0f2a187570, conv_1902e78b1c9b1eae182a3d6e on the sfx
+// sibling). stable-audio-3's six audio-outpainting packagings share one input
+// contract, so they classify as a family; its audio-inpainting packagings only
+// regenerate a masked region in place (no length control, so they cannot
+// extend) and stay "generic", where the required-list guard refuses them.
+// "generic" covers any other endpoint chosen via the model override and
+// resolves through the synonym table.
 func audioExtendFlavor(model string) string {
 	model = strings.ToLower(strings.TrimSpace(model))
 	switch {
-	case strings.Contains(model, "audio-outpaint"):
+	case model == "fal-ai/ace-step/audio-outpaint":
 		return "ace-step"
 	case strings.HasPrefix(model, "sonauto/"):
 		return "sonauto"
-	case strings.Contains(model, "stable-audio") && strings.Contains(model, "inpaint"):
+	case model == "fal-ai/stable-audio-25/inpaint":
 		return "stable-inpaint"
+	case strings.Contains(model, "stable-audio-3") && strings.Contains(model, "audio-outpaint"):
+		return "stable3-outpaint"
 	}
 	return "generic"
 }
+
+// stableAudio3OutpaintMaxSeconds is stable-audio-3's per-side extension cap
+// when no schema is at hand — the small packagings' published bound. The
+// medium packagings allow 380, so the resolver reads the bound off the schema
+// first and falls back to this only without one.
+const stableAudio3OutpaintMaxSeconds = 120
 
 // stableAudioInpaintMaxSeconds is stable-audio-25/inpaint's hard ceiling on
 // seconds_total (and therefore on mask_end).
@@ -605,16 +624,41 @@ func roundSeconds(secs float64) int {
 }
 
 // resolveAudioExtendBody maps a canonical AudioExtendRequest onto the selected
-// extend endpoint's native body. Unlike resolveAudioBody the flavors differ
-// structurally — ace-step splits before/after durations, sonauto takes a side
-// plus one extend_duration, stable-audio places an integer-seconds mask — so
-// each flavor builds its body explicitly; only the generic fallback (an
-// arbitrary endpoint via the model override) uses the synonym machinery. A nil
-// schema still yields a correct literal body for the three known flavors;
-// errors are reserved for unfulfillable calls (a source duration the
-// mask-based endpoint needs but the probe couldn't determine, or a total past
-// the endpoint's cap).
+// extend endpoint's native body and then checks it against the endpoint's own
+// required list. Unlike resolveAudioBody the flavors differ structurally —
+// ace-step splits before/after durations, sonauto takes a side plus one
+// extend_duration, stable-audio-25 places an integer-seconds mask, and
+// stable-audio-3 takes seconds before and after — so each flavor builds its
+// body explicitly; only the generic fallback (an arbitrary endpoint via the
+// model override) uses the synonym machinery. A nil schema still yields a
+// correct literal body for the mapped flavors; errors are reserved for
+// unfulfillable calls (a source duration the mask-based endpoint needs but the
+// probe couldn't determine, or a total past the endpoint's cap).
+//
+// The required-list check is the backstop for the mapped flavors: they build
+// literal bodies and never read the schema, so an endpoint a flavor rule
+// caught wrongly went out in another endpoint's shape and 422ed only after the
+// request left the app. It refuses here instead, naming the inputs.
 func resolveAudioExtendBody(schema *ModelInputSchema, req AudioExtendRequest, ov Overrides) (map[string]any, []string, error) {
+	body, notices, err := resolveAudioExtendFlavorBody(schema, req, ov)
+	if err != nil {
+		return body, notices, err
+	}
+	filled := make([]string, 0, len(body))
+	for key := range body {
+		filled = append(filled, key)
+	}
+	if missing := unfillableRequiredInputs(schema, filled); len(missing) > 0 {
+		return nil, notices, fmt.Errorf(
+			"the extend model %q requires the input(s) %s, which extend_audio cannot provide — pick an extend model in Settings → Models",
+			req.Model, strings.Join(missing, ", "))
+	}
+	return body, notices, nil
+}
+
+// resolveAudioExtendFlavorBody is the body builder resolveAudioExtendBody
+// wraps: one branch per audioExtendFlavor, each a literal body.
+func resolveAudioExtendFlavorBody(schema *ModelInputSchema, req AudioExtendRequest, ov Overrides) (map[string]any, []string, error) {
 	prompt := strings.TrimSpace(req.Prompt)
 	style := strings.TrimSpace(req.Style)
 	lyrics := strings.TrimSpace(req.Lyrics)
@@ -720,6 +764,42 @@ func resolveAudioExtendBody(schema *ModelInputSchema, req AudioExtendRequest, ov
 			"seconds_total": total,
 		}
 		return body, notices, nil
+
+	case "stable3-outpaint":
+		// The prompt is the endpoint's REQUIRED steering input — unlike
+		// ace-step, which has none and folds the description into tags.
+		body := map[string]any{
+			"audio_url": req.SourceAudio,
+			"prompt":    prompt,
+		}
+		if negative := strings.TrimSpace(req.NegativePrompt); negative != "" {
+			body["negative_prompt"] = negative
+		}
+		if !extSet {
+			extSeconds = defaultFalAudioExtendSeconds
+		}
+		// The per-side cap is the schema's (120 on the small packagings, 380 on
+		// medium) and the small bound's only without a schema.
+		limit := float64(stableAudio3OutpaintMaxSeconds)
+		if prop, ok := schema.property("extend_seconds_after"); ok && prop.Maximum != nil {
+			limit = *prop.Maximum
+		}
+		if extSeconds > limit {
+			bound := strconv.FormatFloat(limit, 'f', -1, 64)
+			notices = append(notices, fmt.Sprintf("Capped the extension at %ss: %s accepts at most %ss per side.", bound, req.Model, bound))
+			extSeconds = limit
+		}
+		// Both dials default to 0 on the endpoint — an omitted length would
+		// hand the source back unextended — so both sides always ride
+		// explicitly, the zero included.
+		if before {
+			body["extend_seconds_before"] = extSeconds
+			body["extend_seconds_after"] = 0
+		} else {
+			body["extend_seconds_before"] = 0
+			body["extend_seconds_after"] = extSeconds
+		}
+		return body, notices, nil
 	}
 
 	// Generic: an arbitrary endpoint via the model override — resolve the
@@ -728,7 +808,7 @@ func resolveAudioExtendBody(schema *ModelInputSchema, req AudioExtendRequest, ov
 	// extend.
 	body := map[string]any{}
 	if schema == nil {
-		return nil, notices, errors.New("couldn't load the selected extend model's parameter schema; only the mapped endpoints (stable-audio-25/inpaint, ace-step/audio-outpaint, sonauto/v2/extend) can run without it")
+		return nil, notices, errors.New("couldn't load the selected extend model's parameter schema; only the mapped endpoints (stable-audio-25/inpaint, the stable-audio-3 audio-outpainting models, ace-step/audio-outpaint, sonauto/v2/extend) can run without it")
 	}
 	path, _, ok := findNative(schema, ov, "audio", req.Model, "sourceAudio")
 	if !ok {

@@ -1785,6 +1785,16 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			if seconds, ok := mediasniff.DataURLAudioDuration(req.SourceAudio); ok {
 				req.SourceDurationSeconds = seconds
 			}
+			// The cloud extend workers decode sources with libsndfile, which
+			// cannot read the AAC clip extract_audio produces
+			// (conv_78f17db8d3f2125ded13e263): it becomes WAV first, under a
+			// notice. The hosted upload then carries the container the bytes
+			// really are, never a fixed .mp3.
+			var sourceNotices []string
+			if converted, notice := prepareAudioExtendSource(ctx, config, req.SourceAudio); notice != "" {
+				req.SourceAudio = converted
+				sourceNotices = append(sourceNotices, notice)
+			}
 			if resolveAudioProvider(config) == "replicate" {
 				apiKey, err := loadReplicateAPIKey()
 				if err != nil {
@@ -1798,12 +1808,13 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				// the Files API above the inline threshold — the lipsync
 				// pattern. Fail-soft; the model's own error surfaces otherwise.
 				if strings.TrimSpace(req.SourceAudio) != "" {
-					if resolved, err := client.ResolveMediaURL(ctx, req.SourceAudio, "audio/mpeg", "source-audio.mp3"); err == nil {
+					if resolved, err := client.ResolveMediaURL(ctx, req.SourceAudio, "audio/mpeg", audioUploadFilename("source-audio", req.SourceAudio)); err == nil {
 						req.SourceAudio = resolved
 					}
 				}
 				schema := replicateSchemaCache.Get(ctx, req.Model)
-				body, notices, err := resolveReplicateAudioExtendInput(schema, req)
+				body, resolverNotices, err := resolveReplicateAudioExtendInput(schema, req)
+				notices := append(sourceNotices, resolverNotices...)
 				if err != nil {
 					return GeneratedAudio{Notices: notices}, err
 				}
@@ -1838,12 +1849,13 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			// path the voice reference uses. Fail-soft; fal's own error surfaces
 			// if the inline form is also rejected.
 			if strings.TrimSpace(req.SourceAudio) != "" {
-				if resolved, err := client.resolveMediaURLHosted(ctx, req.SourceAudio, "audio/mpeg", "source-audio.mp3"); err == nil {
+				if resolved, err := client.resolveMediaURLHosted(ctx, req.SourceAudio, "audio/mpeg", audioUploadFilename("source-audio", req.SourceAudio)); err == nil {
 					req.SourceAudio = resolved
 				}
 			}
 			schema := schemaCache.Get(ctx, req.Model)
-			body, notices, err := resolveAudioExtendBody(schema, req, falOverrides)
+			body, resolverNotices, err := resolveAudioExtendBody(schema, req, falOverrides)
+			notices := append(sourceNotices, resolverNotices...)
 			if err != nil {
 				return GeneratedAudio{Notices: notices}, err
 			}

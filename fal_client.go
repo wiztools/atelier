@@ -151,8 +151,9 @@ const (
 	// appends or prepends generated audio while preserving the unmasked original
 	// exactly (mask_start/mask_end/seconds_total, capped at 190s total). The
 	// music-oriented siblings (fal-ai/ace-step/audio-outpaint, sonauto/v2/extend)
-	// are selected per-call via the model override; all three are mapped by
-	// resolveAudioExtendBody.
+	// and stable-audio-3's audio-outpainting packagings are selected per-call
+	// via the model override or in Settings; all are mapped by
+	// resolveAudioExtendBody, each by a flavor rule naming its exact endpoint.
 	defaultFalAudioExtendModel = "fal-ai/stable-audio-25/inpaint"
 	// defaultFalInpaintModel is the image editor's mask-inpainting endpoint
 	// when none is configured — FLUX.1 Fill [pro] (verified 2026-10 against

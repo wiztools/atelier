@@ -590,6 +590,93 @@ func whisperTranscodeWAVArgs(input, output string) []string {
 	return []string{"-y", "-i", input, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", output}
 }
 
+// cloudExtendUndecodable reports whether the cloud extend models cannot decode
+// an audio container. Their workers read sources through libsndfile
+// (conv_78f17db8d3f2125ded13e263: fal-ai/stable-audio-25/inpaint answered
+// "Format not recognised." — libsndfile's own wording, reproduced with
+// sndfile-info on the same clip — for the AAC clip extract_audio produces, and
+// accepted the clip's MP3 copy in conv_666ca46a206e075a4b1a30ee), which reads
+// WAV, MP3, FLAC, and OGG but no AAC container at all. Mislabelling the upload
+// is not the cause and renaming it is not the cure: the bytes have to change.
+func cloudExtendUndecodable(mediaType string) bool {
+	switch strings.ToLower(strings.TrimSpace(mediaType)) {
+	case "audio/mp4", "audio/aac", "audio/x-m4a", "audio/mp4a-latm":
+		return true
+	}
+	return false
+}
+
+// prepareAudioExtendSource returns the reference the cloud extend models can
+// decode: the clip itself, or a WAV re-encode through the local ffmpeg when its
+// container is one their decoders cannot read. notice explains a conversion. A
+// missing or failing ffmpeg returns the original untouched with no notice, so
+// the model's own error surfaces (the whisper transcode's fail-soft contract).
+func prepareAudioExtendSource(ctx context.Context, config AppConfig, reference string) (string, string) {
+	reference = strings.TrimSpace(reference)
+	if reference == "" || !cloudExtendUndecodable(audioReferenceMediaType(reference, "")) {
+		return reference, ""
+	}
+	wav, err := transcodeAudioSourceToWAV(ctx, config, reference)
+	if err != nil {
+		return reference, ""
+	}
+	return wav, "The source clip was converted from AAC/M4A to WAV before extending — the extend models cannot decode AAC, so local ffmpeg transcoded it first."
+}
+
+// transcodeAudioSourceToWAV re-encodes an attached audio clip as 16-bit PCM
+// WAV, keeping its sample rate and channels, and returns it as a data URL.
+func transcodeAudioSourceToWAV(ctx context.Context, config AppConfig, reference string) (string, error) {
+	dir, err := os.MkdirTemp("", "atelier-extend-transcode-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(dir)
+	input, err := stageMediaDataURL(dir, "source", reference)
+	if err != nil {
+		return "", err
+	}
+	output := filepath.Join(dir, "source.wav")
+	if _, err := runLocalFFmpeg(ctx, config, audioWAVTranscodeArgs(input, output)); err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		return "", err
+	}
+	return "data:audio/wav;base64," + base64.StdEncoding.EncodeToString(data), nil
+}
+
+// audioWAVTranscodeArgs builds the conversion command: -y over a fresh output
+// path, -vn drops embedded cover art (the audio tools' idiom), and pcm_s16le
+// keeps the source's own sample rate and channels — unlike the whisper
+// conversion, an extend source is not the model's input shape to normalize.
+func audioWAVTranscodeArgs(input, output string) []string {
+	return []string{"-y", "-i", input, "-vn", "-c:a", "pcm_s16le", output}
+}
+
+// audioReferenceMediaType reads the audio container a reference declares — a
+// data URL's header, or a local artifact path's extension — returning fallback
+// when it names none (bare base64, an unknown extension).
+func audioReferenceMediaType(reference, fallback string) string {
+	if mediaType := dataURLMediaType(reference); mediaType != "" && mediaType != "base64" {
+		return mediaType
+	}
+	if path, ok := artifactMediaPath(reference); ok {
+		if mediaType := mediaTypeForExtension(strings.ToLower(filepath.Ext(path))); mediaType != "" {
+			return mediaType
+		}
+	}
+	return fallback
+}
+
+// audioUploadFilename names an audio upload base plus the extension of the
+// container the reference really declares — the hosted URL's extension is what
+// the decoder on the other end sees (the change_voice rule) — defaulting to
+// .mp3 when the reference names none.
+func audioUploadFilename(base, reference string) string {
+	return base + audioExtensionForMediaType(audioReferenceMediaType(reference, "audio/mpeg"))
+}
+
 // whisperSegmentArgs cuts the transcoded WAV into fixed-length chunks with the
 // segment muxer — `-c copy` on PCM is sample-accurate and instant (no
 // re-encode), and every chunk is exactly chunkSeconds long except the last, so

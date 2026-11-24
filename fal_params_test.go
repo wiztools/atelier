@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -3443,8 +3444,128 @@ func TestResolveAudioExtendBody(t *testing.T) {
 		}
 	})
 
+	// The stable-audio-3 audio-outpainting family: prompt is the REQUIRED
+	// steering input and the extension rides seconds before and after. Its
+	// schemas are pinned from the live endpoints (captured 2026-11-24); the six
+	// packagings differ only in the per-side cap (120 small, 380 medium) and the
+	// sampling defaults, none of which the resolver writes.
+	t.Run("stable audio 3 outpainting sends the prompt the endpoint requires", func(t *testing.T) {
+		// conv_1902e78b1c9b1eae182a3d6e's exact call. The id used to classify as
+		// ace-step — "audio-outpaint" is a prefix of "audio-outpainting" — so
+		// the description went out as tags with no prompt and 422ed three
+		// rounds running.
+		body, notices, err := resolveAudioExtendBody(loadSchema(t, "stable-audio-3-small-sfx-audio-outpainting"), AudioExtendRequest{
+			Model: "fal-ai/stable-audio-3/small/sfx/audio-outpainting", Prompt: "continue in the same style",
+			Duration: "4", SourceAudio: source,
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		want := map[string]any{
+			"audio_url": source, "prompt": "continue in the same style",
+			"extend_seconds_before": 0, "extend_seconds_after": 4.0,
+		}
+		if !reflect.DeepEqual(body, want) {
+			t.Fatalf("body = %v, want %v (no tags, no ace-step dial)", body, want)
+		}
+		if len(notices) != 0 {
+			t.Fatalf("expected no notices, got %v", notices)
+		}
+	})
+
+	t.Run("stable audio 3 outpainting before", func(t *testing.T) {
+		body, _, err := resolveAudioExtendBody(loadSchema(t, "stable-audio-3-small-sfx-audio-outpainting"), AudioExtendRequest{
+			Model: "fal-ai/stable-audio-3/small/music/audio-outpainting", Prompt: "intro swell",
+			Duration: "4", Direction: "before", SourceAudio: source,
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		if body["extend_seconds_before"] != 4.0 || body["extend_seconds_after"] != 0 {
+			t.Fatalf("durations = %v, want 4 before and an explicit 0 after", body)
+		}
+	})
+
+	t.Run("stable audio 3 outpainting default duration is 30", func(t *testing.T) {
+		// Both dials default to 0 on the endpoint, so an unset length must not
+		// stay unset — it takes the mapped flavors' built-in 30s.
+		body, _, err := resolveAudioExtendBody(nil, AudioExtendRequest{
+			Model: "fal-ai/stable-audio-3/small/sfx/audio-outpainting", Prompt: "more rain",
+			SourceAudio: source,
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		if body["extend_seconds_after"] != 30.0 {
+			t.Fatalf("default extension should add 30s: %v", body)
+		}
+	})
+
+	t.Run("stable audio 3 outpainting caps at the schema's bound", func(t *testing.T) {
+		body, notices, err := resolveAudioExtendBody(loadSchema(t, "stable-audio-3-small-sfx-audio-outpainting"), AudioExtendRequest{
+			Model: "fal-ai/stable-audio-3/small/sfx/audio-outpainting", Prompt: "more",
+			Duration: "150", SourceAudio: source,
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		if body["extend_seconds_after"] != 120.0 {
+			t.Fatalf("a small packaging should clamp 150s to its 120s bound: %v", body)
+		}
+		if len(notices) != 1 || !strings.Contains(notices[0], "120") {
+			t.Fatalf("expected a clamp notice naming 120, got %v", notices)
+		}
+
+		// The medium packaging's bound is 380: 150 rides untouched, 400 clamps.
+		body, notices, err = resolveAudioExtendBody(loadSchema(t, "stable-audio-3-medium-audio-outpainting"), AudioExtendRequest{
+			Model: "fal-ai/stable-audio-3/medium/audio-outpainting", Prompt: "more",
+			Duration: "150", SourceAudio: source,
+		}, builtinFalOverrides())
+		if err != nil || body["extend_seconds_after"] != 150.0 || len(notices) != 0 {
+			t.Fatalf("150s fits the medium bound: body=%v notices=%v err=%v", body, notices, err)
+		}
+		body, notices, err = resolveAudioExtendBody(loadSchema(t, "stable-audio-3-medium-audio-outpainting"), AudioExtendRequest{
+			Model: "fal-ai/stable-audio-3/medium/audio-outpainting", Prompt: "more",
+			Duration: "400", SourceAudio: source,
+		}, builtinFalOverrides())
+		if err != nil || body["extend_seconds_after"] != 380.0 || len(notices) != 1 || !strings.Contains(notices[0], "380") {
+			t.Fatalf("400s should clamp to the medium bound of 380: body=%v notices=%v err=%v", body, notices, err)
+		}
+	})
+
+	t.Run("stable audio 3 outpainting without a schema caps at 120", func(t *testing.T) {
+		body, notices, err := resolveAudioExtendBody(nil, AudioExtendRequest{
+			Model: "fal-ai/stable-audio-3/medium/audio-outpainting", Prompt: "more",
+			Duration: "150", SourceAudio: source,
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		if body["extend_seconds_after"] != 120.0 || len(notices) != 1 {
+			t.Fatalf("without a schema the small bound is the only known one: body=%v notices=%v", body, notices)
+		}
+	})
+
+	t.Run("stable audio 3 outpainting binds the negative prompt", func(t *testing.T) {
+		body, _, err := resolveAudioExtendBody(loadSchema(t, "stable-audio-3-small-sfx-audio-outpainting"), AudioExtendRequest{
+			Model: "fal-ai/stable-audio-3/small/sfx/audio-outpainting", Prompt: "rain continues",
+			Duration: "4", NegativePrompt: "vocals, percussion", SourceAudio: source,
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		if body["negative_prompt"] != "vocals, percussion" {
+			t.Fatalf("body = %v, want the negative prompt on the endpoint's own input", body)
+		}
+	})
+
 	t.Run("generic model resolves through synonyms", func(t *testing.T) {
-		body, notices, err := resolveAudioExtendBody(loadSchema(t, "f5-tts"), AudioExtendRequest{
+		// An endpoint naming its inputs the way f5-tts does, without that
+		// model's required model_type — which no canonical maps and the
+		// required-list guard refuses on (TestResolveAudioExtendBodyRequiredGuard).
+		schema := parseExtendSchema(t, `{"components":{"schemas":{"AcmeExtendInput":{"type":"object","required":["gen_text","ref_audio_url"],`+
+			`"properties":{"ref_audio_url":{"type":"string"},"gen_text":{"type":"string"}}}}}}`)
+		body, notices, err := resolveAudioExtendBody(schema, AudioExtendRequest{
 			Model: "acme/extend", Prompt: "more rain", Duration: "12",
 			SourceAudio: source,
 		}, builtinFalOverrides())
@@ -3454,10 +3575,10 @@ func TestResolveAudioExtendBody(t *testing.T) {
 		if body["ref_audio_url"] != source || body["gen_text"] != "more rain" {
 			t.Fatalf("body = %v", body)
 		}
-		// f5-tts declares no duration input, so the canonical drops with a
-		// notice rather than 422ing at fal.
+		// The endpoint declares no duration input, so the canonical drops with
+		// a notice rather than 422ing at fal.
 		if _, ok := body["duration"]; ok {
-			t.Fatalf("f5-tts has no duration input; it must not be sent (body: %v)", body)
+			t.Fatalf("the endpoint has no duration input; it must not be sent (body: %v)", body)
 		}
 		if len(notices) != 1 || !strings.Contains(notices[0], "duration") {
 			t.Fatalf("expected a duration drop notice, got %v", notices)
@@ -3479,6 +3600,115 @@ func TestResolveAudioExtendBody(t *testing.T) {
 		}, builtinFalOverrides())
 		if err == nil || !strings.Contains(err.Error(), "schema") {
 			t.Fatalf("expected a schema error, got %v", err)
+		}
+	})
+}
+
+// parseExtendSchema parses a small OpenAPI input schema written inline in a
+// test.
+func parseExtendSchema(t *testing.T, raw string) *ModelInputSchema {
+	t.Helper()
+	schema, err := parseModelInputSchema([]byte(raw))
+	if err != nil {
+		t.Fatalf("parse schema: %v", err)
+	}
+	return schema
+}
+
+// TestAudioExtendFlavor pins the classifier: each single-endpoint flavor matches
+// its exact id, stable-audio-3's audio-outpainting packagings classify as a
+// family, and nothing else borrows a flavor by keyword. The ids are the
+// audio-to-audio catalog's extend/outpaint/inpaint entries as of 2026-11-24.
+func TestAudioExtendFlavor(t *testing.T) {
+	for _, tc := range []struct{ model, want string }{
+		{"fal-ai/ace-step/audio-outpaint", "ace-step"},
+		{" FAL-AI/ACE-STEP/AUDIO-OUTPAINT ", "ace-step"},
+		{"fal-ai/ace-step/audio-outpaint-v2", "generic"},
+		{"sonauto/v2/extend", "sonauto"},
+		{"fal-ai/stable-audio-25/inpaint", "stable-inpaint"},
+		{"fal-ai/stable-audio-3/small/music/audio-outpainting", "stable3-outpaint"},
+		{"fal-ai/stable-audio-3/small/sfx/audio-outpainting", "stable3-outpaint"},
+		{"fal-ai/stable-audio-3/small/music/base/audio-outpainting", "stable3-outpaint"},
+		{"fal-ai/stable-audio-3/small/sfx/base/audio-outpainting", "stable3-outpaint"},
+		{"fal-ai/stable-audio-3/medium/audio-outpainting", "stable3-outpaint"},
+		{"fal-ai/stable-audio-3/medium/base/audio-outpainting", "stable3-outpaint"},
+		{"fal-ai/stable-audio-3/small/music/audio-inpainting", "generic"},
+		{"fal-ai/stable-audio-3/small/sfx/base/audio-inpainting", "generic"},
+		{"fal-ai/stable-audio-3/medium/audio-inpainting", "generic"},
+		{"fal-ai/ace-step/audio-inpaint", "generic"},
+		{"mureka/v8/song/extend", "generic"},
+		{"acme/extend", "generic"},
+	} {
+		if got := audioExtendFlavor(tc.model); got != tc.want {
+			t.Errorf("audioExtendFlavor(%q) = %q, want %q", tc.model, got, tc.want)
+		}
+	}
+}
+
+// TestResolveAudioExtendBodyRequiredGuard pins the backstop: the mapped flavors
+// build literal bodies without reading the schema, so resolveAudioExtendBody
+// checks every body — the generic one included — against the endpoint's own
+// required list and refuses before the request leaves the app.
+func TestResolveAudioExtendBodyRequiredGuard(t *testing.T) {
+	const source = "https://v3.test.fal.media/files/abc/source.mp3"
+
+	t.Run("a required input the mapping cannot fill refuses", func(t *testing.T) {
+		// f5-tts's real contract demands model_type, which no canonical maps.
+		_, _, err := resolveAudioExtendBody(loadSchema(t, "f5-tts"), AudioExtendRequest{
+			Model: "acme/extend", Prompt: "more rain", SourceAudio: source,
+		}, builtinFalOverrides())
+		if err == nil || !strings.Contains(err.Error(), "model_type") || !strings.Contains(err.Error(), "Settings") {
+			t.Fatalf("expected a refusal naming model_type and the Settings remedy, got %v", err)
+		}
+	})
+
+	t.Run("the stable audio 3 inpainting models cannot extend", func(t *testing.T) {
+		// They only regenerate a masked region in place. The old loose
+		// stable-audio+inpaint rule built stable-audio-25's mask body for them,
+		// which fal rejected for the two inputs this names.
+		_, _, err := resolveAudioExtendBody(loadSchema(t, "stable-audio-3-small-music-audio-inpainting"), AudioExtendRequest{
+			Model: "fal-ai/stable-audio-3/small/music/audio-inpainting", Prompt: "more rain",
+			Duration: "4", SourceAudio: source,
+		}, builtinFalOverrides())
+		if err == nil || !strings.Contains(err.Error(), "mask_start_seconds, mask_end_seconds") || !strings.Contains(err.Error(), "Settings") {
+			t.Fatalf("expected a refusal naming both mask inputs and the Settings remedy, got %v", err)
+		}
+	})
+
+	t.Run("the mapped flavors satisfy their own endpoints", func(t *testing.T) {
+		// ace-step requires tags; stable-audio-25 requires prompt. A correct
+		// body is never refused, schema or no schema.
+		for _, schema := range []*ModelInputSchema{nil, loadSchema(t, "ace-step-audio-outpaint")} {
+			body, _, err := resolveAudioExtendBody(schema, AudioExtendRequest{
+				Model: "fal-ai/ace-step/audio-outpaint", Prompt: "gentle piano outro",
+				Duration: "15", SourceAudio: source,
+			}, builtinFalOverrides())
+			if err != nil || body["tags"] != "gentle piano outro" {
+				t.Fatalf("ace-step body refused (schema=%v): body=%v err=%v", schema != nil, body, err)
+			}
+		}
+		for _, schema := range []*ModelInputSchema{nil, loadSchema(t, "stable-audio-25-inpaint")} {
+			body, _, err := resolveAudioExtendBody(schema, AudioExtendRequest{
+				Model: "fal-ai/stable-audio-25/inpaint", Prompt: "rain continues",
+				Duration: "20", SourceAudio: source, SourceDurationSeconds: 10.2,
+			}, builtinFalOverrides())
+			if err != nil || body["prompt"] != "rain continues" {
+				t.Fatalf("stable-audio-25 body refused (schema=%v): body=%v err=%v", schema != nil, body, err)
+			}
+		}
+	})
+
+	t.Run("a required input with a declared default is the endpoint's own", func(t *testing.T) {
+		// The guard must not refuse an endpoint for a required input it fills
+		// itself (enable_safety_checker's true on the stable-audio endpoints).
+		schema := parseExtendSchema(t, `{"components":{"schemas":{"AcmeExtendInput":{"type":"object",`+
+			`"required":["gen_text","ref_audio_url","safety"],"properties":{"ref_audio_url":{"type":"string"},"gen_text":{"type":"string"},`+
+			`"safety":{"type":"boolean","default":true}}}}}}`)
+		body, _, err := resolveAudioExtendBody(schema, AudioExtendRequest{
+			Model: "acme/extend", Prompt: "more rain", SourceAudio: source,
+		}, builtinFalOverrides())
+		if err != nil || body["gen_text"] != "more rain" {
+			t.Fatalf("a defaulted required input must not refuse: body=%v err=%v", body, err)
 		}
 	})
 }
