@@ -28,6 +28,7 @@ import {
   defaultFalSoundEffectsModel,
   defaultFalSoundEffectsVideoModel,
   defaultFalVoiceDesignModel,
+  defaultFalVoiceChangerModel,
   defaultFalAudioExtendModel,
   defaultFalTranscribeModel,
   defaultReplicateTranscribeModel,
@@ -258,6 +259,7 @@ type ModelSelectionValue = {
   falSoundEffectsModel: string;
   falSoundEffectsVideoModel: string;
   falVoiceDesignModel: string;
+  falVoiceChangerModel: string;
   falAudioExtendModel: string;
   transcriptionProvider: 'fal' | 'local-whisper' | 'replicate' | 'runware';
   falTranscribeModel: string;
@@ -336,6 +338,7 @@ function overrideKeysFromRecord(overrides: main.ConversationModelOverrides | nul
   if (overrides.soundEffectsModel) keys.add('soundEffectsModel');
   if (overrides.soundEffectsVideoModel) keys.add('soundEffectsVideoModel');
   if (overrides.voiceDesignModel) keys.add('voiceDesignModel');
+  if (overrides.voiceChangerModel) keys.add('voiceChangerModel');
   if (overrides.audioExtendModel) keys.add('audioExtendModel');
   if (overrides.transcribeModel) keys.add('transcribeModel');
   if (overrides.transcriptionProvider) keys.add('transcriptionProvider');
@@ -408,6 +411,7 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
   if (keys.has('soundEffectsModel')) payload.soundEffectsModel = draft.audioProvider === 'replicate' ? draft.replicateSoundEffectsModel : draft.audioProvider === 'runware' ? draft.runwareSoundEffectsModel : draft.falSoundEffectsModel;
   if (keys.has('soundEffectsVideoModel')) payload.soundEffectsVideoModel = draft.audioProvider === 'replicate' ? draft.replicateSoundEffectsVideoModel : draft.audioProvider === 'runware' ? draft.runwareSoundEffectsVideoModel : draft.falSoundEffectsVideoModel;
   if (keys.has('voiceDesignModel')) payload.voiceDesignModel = draft.falVoiceDesignModel;
+  if (keys.has('voiceChangerModel')) payload.voiceChangerModel = draft.falVoiceChangerModel;
   if (keys.has('audioExtendModel')) payload.audioExtendModel = draft.audioProvider === 'replicate' ? draft.replicateAudioExtendModel : draft.falAudioExtendModel;
   // The transcription model lands on the slot the effective provider reads,
   // mirroring the video pair's provider-conditional overlay.
@@ -507,6 +511,7 @@ function ModelSelectionPanel({
     falSoundEffectsVideoModels: main.FalModel[];
     falAudioExtendModels: main.FalModel[];
     falVoiceDesignModels: main.FalModel[];
+    falVoiceChangerModels: main.FalModel[];
     falTranscribeModels: main.FalModel[];
     falUpscaleModels: main.FalModel[];
     falLipsyncImageModels: main.FalModel[];
@@ -603,6 +608,7 @@ function ModelSelectionPanel({
   const falSoundEffectsVideoOptions = falModelOptionList(catalogs.falSoundEffectsVideoModels);
   const falAudioExtendOptions = falModelOptionList(catalogs.falAudioExtendModels);
   const falVoiceDesignOptions = falModelOptionList(catalogs.falVoiceDesignModels);
+  const falVoiceChangerOptions = falModelOptionList(catalogs.falVoiceChangerModels);
   const falTranscribeOptions = falModelOptionList(catalogs.falTranscribeModels);
   const falLipsyncImageOptions = falModelOptionList(catalogs.falLipsyncImageModels);
   const falLipsyncVideoOptions = falModelOptionList(catalogs.falLipsyncVideoModels);
@@ -1672,7 +1678,7 @@ function ModelSelectionPanel({
               {fieldLabel('audio-provider', 'Audio Provider', 'audioProvider')}
               <InfoHint
                 label="Audio provider"
-                text="Where the non-voice audio tools run — generate_sound (music and sound effects) and add_sound_effects (a video's soundtrack). fal.ai's endpoints cover both; Replicate's defaults also cover both, and Runware's Mirelo SFX serves text-to-audio and mixes the soundtrack into the attached clip. Audio extension stays on fal.ai/Replicate (Runware has no input-audio model), voice design and voice cloning stay on fal.ai, and speech routes by the Speech Provider below."
+                text="Where the non-voice audio tools run — generate_sound (music and sound effects) and add_sound_effects (a video's soundtrack). fal.ai's endpoints cover both; Replicate's defaults also cover both, and Runware's Mirelo SFX serves text-to-audio and mixes the soundtrack into the attached clip. Audio extension stays on fal.ai/Replicate (Runware has no input-audio model), voice design and voice cloning stay on fal.ai regardless, voice changing is offered only while this provider is fal.ai, and speech routes by the Speech Provider below."
               />
               {airplaneMode ? (
                 <AirplaneHint
@@ -1975,6 +1981,26 @@ function ModelSelectionPanel({
                 allowCustom
               />
             </div>
+            {value.audioProvider === 'fal' ? (
+              <div className="field">
+                <div className="field-label-row">
+                  {fieldLabel('fal-voice-changer-model', 'Voice Changer Model (fal.ai)', 'voiceChangerModel')}
+                  <InfoHint
+                    label="Voice changer model"
+                    text="Re-voices an EXISTING recording (the change_voice tool): the clip keeps its words, pacing, and emotion and comes back in a named target voice. The voices are the endpoint's own catalog — listed for the planner from the model's published schema — and there is no prompt, so a voice cannot be described in words. Offered only while the Audio Provider above is fal.ai, unlike voice design and cloning, which stay on fal.ai whichever provider is selected."
+                  />
+                </div>
+                <ModelCombobox
+                  id="fal-voice-changer-model"
+                  ariaLabel="fal.ai voice changer model"
+                  placeholder={defaultFalVoiceChangerModel}
+                  value={value.falVoiceChangerModel}
+                  onChange={(next) => onChange({falVoiceChangerModel: next})}
+                  options={falVoiceChangerOptions}
+                  allowCustom
+                />
+              </div>
+            ) : null}
           </div>
         </div>
         {!airplaneMode && value.audioProvider === 'replicate' && !catalogs.replicateHasKey ? (

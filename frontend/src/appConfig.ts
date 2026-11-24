@@ -30,6 +30,7 @@ import {
   defaultFalVideoRestyleModel,
   defaultFalVideoCharacterModel,
   defaultFalVideoUpscaleModel,
+  defaultFalVoiceChangerModel,
   defaultFalVoiceDesignModel,
   defaultImageAspectRatio,
   defaultImageSizePreset,
@@ -146,6 +147,7 @@ function configValues(config: main.AppConfig) {
   const nextFalSoundEffectsModel = config.providers?.fal?.soundEffectsModel || defaultFalSoundEffectsModel;
   const nextFalSoundEffectsVideoModel = config.providers?.fal?.soundEffectsVideoModel || defaultFalSoundEffectsVideoModel;
   const nextFalVoiceDesignModel = config.providers?.fal?.voiceDesignModel || defaultFalVoiceDesignModel;
+  const nextFalVoiceChangerModel = config.providers?.fal?.voiceChangerModel || defaultFalVoiceChangerModel;
   const nextFalAudioExtendModel = config.providers?.fal?.audioExtendModel || defaultFalAudioExtendModel;
   const nextFalTranscribeModel = config.providers?.fal?.transcribeModel || defaultFalTranscribeModel;
   const nextReplicateTranscribeModel = config.providers?.replicate?.transcribeModel || defaultReplicateTranscribeModel;
@@ -252,6 +254,7 @@ function configValues(config: main.AppConfig) {
     falSoundEffectsModel: nextFalSoundEffectsModel,
     falSoundEffectsVideoModel: nextFalSoundEffectsVideoModel,
     falVoiceDesignModel: nextFalVoiceDesignModel,
+    falVoiceChangerModel: nextFalVoiceChangerModel,
     falAudioExtendModel: nextFalAudioExtendModel,
     falTranscribeModel: nextFalTranscribeModel,
     replicateTranscribeModel: nextReplicateTranscribeModel,
@@ -328,6 +331,7 @@ function appConfigPayload(s: AppConfigValues & ConfigKeyFlags) {
         soundEffectsModel: s.falSoundEffectsModel,
         soundEffectsVideoModel: s.falSoundEffectsVideoModel,
         voiceDesignModel: s.falVoiceDesignModel,
+        voiceChangerModel: s.falVoiceChangerModel,
         audioCloneModel: s.falAudioCloneModel,
         audioExtendModel: s.falAudioExtendModel,
         transcribeModel: s.falTranscribeModel,

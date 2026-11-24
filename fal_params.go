@@ -90,6 +90,9 @@ func builtinFalOverrides() Overrides {
 			},
 		},
 		"lipsync": {},
+		// The voice-changer category (resolveVoiceChangeBody): empty by
+		// default, present so user overrides in fal-overrides.json have a home.
+		"voice-change": {},
 		// The video sound-effects category (resolveSFXBody): empty by default,
 		// present so user overrides in fal-overrides.json have a home.
 		"sfx": {},
@@ -316,6 +319,17 @@ var lipsyncSynonyms = map[string][]string{
 	"sourceAudio": {"audio_url", "audio_file_url", "audio"},
 	"sourceImage": {"image_url", "image_urls"},
 	"sourceVideo": {"video_url", "video_urls"},
+}
+
+// voiceChangeSynonyms lists, per canonical param, the native key names to look
+// for in a voice-changer model's schema (the change_voice tool's category —
+// resolveVoiceChangeBody). sourceAudio is the recording to re-voice; voice
+// names the target catalog voice. There is deliberately no prompt canonical: a
+// voice changer takes a voice NAME, and a model steered by free text is a
+// different tool.
+var voiceChangeSynonyms = map[string][]string{
+	"sourceAudio": {"audio_url", "audio", "input_audio", "audio_file_url", "source_audio"},
+	"voice":       {"voice", "voice_name", "target_voice", "voice_id"},
 }
 
 // replicateLipsyncSynonyms is the Replicate sibling of lipsyncSynonyms — the
@@ -2093,6 +2107,69 @@ func resolveLipsyncBody(schema *ModelInputSchema, req LipsyncGenerateRequest, ov
 	return body, notices, nil
 }
 
+// resolveVoiceChangeBody maps a VoiceChangeRequest onto a voice-changer
+// model's native input schema, returning the fal body and user-facing notices.
+// The source clip is FATAL when the model declares no audio input: a voice
+// changer with nothing to re-voice can only 422 downstream, the same rule as
+// the lip-sync face source. The target voice is only a notice when the model
+// has no voice control — such a model still re-voices the clip, with whatever
+// voice it carries. An empty voice sends nothing and takes the model's own
+// default (the executor refuses it on the default endpoint before this runs).
+func resolveVoiceChangeBody(schema *ModelInputSchema, req VoiceChangeRequest, ov Overrides) (map[string]any, []string, error) {
+	audio := falAudioURL(strings.TrimSpace(req.SourceAudio))
+	voice := strings.TrimSpace(req.Voice)
+
+	if schema == nil {
+		body := map[string]any{}
+		if audio != "" {
+			body["audio_url"] = audio
+		}
+		if voice != "" {
+			body["voice"] = voice
+		}
+		return body, []string{"Couldn't load the model's parameter schema; generated with defaults and may have dropped an unsupported input."}, nil
+	}
+
+	body := map[string]any{}
+	var notices []string
+
+	if path, prop, ok := findNative(schema, ov, "voice-change", req.Model, "sourceAudio"); ok {
+		setBodyPath(schema, body, path, coerceVideoValue(prop, audio))
+	} else {
+		return nil, nil, fmt.Errorf(
+			"the voice changer %q has no audio input — it cannot re-voice an attached clip; pick a voice changer model in Settings → Models",
+			req.Model)
+	}
+	if voice != "" {
+		if path, prop, ok := findNative(schema, ov, "voice-change", req.Model, "voice"); ok {
+			value, notice := coerceValue("voice", prop, voice, req.Model)
+			if notice != "" {
+				notices = append(notices, notice)
+			}
+			// coerceValue returns nil only beside a notice (a string the
+			// property's enum doesn't list): the model's own default voice
+			// then applies, said in the notice.
+			if value != nil {
+				setBodyPath(schema, body, path, value)
+			}
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q has no voice input; the requested voice %q was ignored and the model used its own.",
+				req.Model, voice))
+		}
+	}
+	filled := make([]string, 0, len(body))
+	for key := range body {
+		filled = append(filled, key)
+	}
+	if missing := unfillableRequiredInputs(schema, filled); len(missing) > 0 {
+		return nil, notices, fmt.Errorf(
+			"the voice changer %q requires the input(s) %s, which change_voice cannot provide — pick a voice changer model in Settings → Models",
+			req.Model, strings.Join(missing, ", "))
+	}
+	return body, notices, nil
+}
+
 // resolveSFXBody maps an SFXGenerateRequest onto a video sound-effects model's
 // native input schema, returning the fal body and user-facing notices. The
 // source clip is the tool's entire purpose, so an unmapped video input is a
@@ -2660,6 +2737,8 @@ func synonymsFor(category, canon string) []string {
 		return videoSynonyms[canon]
 	case "lipsync":
 		return lipsyncSynonyms[canon]
+	case "voice-change":
+		return voiceChangeSynonyms[canon]
 	case "replicate-lipsync":
 		return replicateLipsyncSynonyms[canon]
 	case "sfx":

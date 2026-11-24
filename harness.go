@@ -113,6 +113,16 @@ type HarnessPreparedTurn struct {
 	// responseMode so the notes can name the media kind.
 	MediaGenUnavailable bool
 	MediaGenMode        string
+	// VoiceChangeUnavailable records that triage routed the turn as a voice
+	// change (its toolTask names change_voice) while the tool is not
+	// registered — the audio provider is not fal.ai, no fal.ai key is set, the
+	// slot is empty, or airplane mode is on. The planner never sees the turn:
+	// the registry lacks the one tool the ask needs, and the audio-mode
+	// fallbacks would hand it the five generate tools instead, which end in a
+	// designed voice or a transcript nobody asked for. The turn is answered
+	// toolless with a code-authored note naming the remedy (and a blockquote
+	// fallback), the way the generation gaps are.
+	VoiceChangeUnavailable bool
 	// DocumentAuthored carries the document the responseMode-"document"
 	// authoring pass produced (document_authoring.go): nil when the mode
 	// wasn't routed, or the pass failed and the turn degrades to a normal
@@ -530,6 +540,28 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	}
 	run.Triage = &decision
 
+	// A voice-change ask must reach the planner only when change_voice is in
+	// the registry. Absent, the registry lacks the one tool the ask needs and
+	// the force-tool fallback below would hand the planner the five generate
+	// tools, so the turn would end in a designed voice or a transcript nobody
+	// asked for; it is answered toolless instead, and VoiceChangeUnavailable
+	// carries the note that names the remedy. The ask is recognized by the
+	// tool name in triage's toolTask — the contract word its audio rule
+	// teaches it to write whether or not the tool is listed — so both of
+	// triage's needsTools spellings converge here.
+	voiceChangeAsk := decision.ResponseMode == "audio" &&
+		containsToolNameWord(decision.ToolTask, voiceChangerToolName)
+	_, voiceChangeRegistered := h.toolRegistry().Get(voiceChangerToolName)
+	voiceChangeUnavailable := voiceChangeAsk && !voiceChangeRegistered
+	if voiceChangeUnavailable {
+		decision.NeedsTools = false
+	} else if voiceChangeAsk && !decision.NeedsTools {
+		// The tool IS registered and triage named it: the registry is the
+		// deterministic source (the force-tool rule below), so run the planner
+		// — but keep triage's task, which already names the right tool.
+		decision.NeedsTools = true
+	}
+
 	// Image mode requires tools (generate_image). Force it so the planner runs.
 	if decision.ResponseMode == "image" && !decision.NeedsTools {
 		decision.NeedsTools = true
@@ -545,7 +577,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	// source, so force the planner on and let the media actually get made.
 	// When the tool is genuinely absent the decision stands and the
 	// MediaGenUnavailable note below carries the decline instead.
-	if isGenerationMode(decision.ResponseMode) && decision.ResponseMode != "image" && !decision.NeedsTools &&
+	if !voiceChangeUnavailable && isGenerationMode(decision.ResponseMode) && decision.ResponseMode != "image" && !decision.NeedsTools &&
 		generationToolAvailable(h.toolRegistry(), decision.ResponseMode) {
 		decision.NeedsTools = true
 		decision.ToolTask = generationForceToolTask(decision.ResponseMode)
@@ -621,7 +653,10 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	// force-tooled just above, so it falls through the planner-exhausted path
 	// instead; in practice this guards video and audio.
 	preparation.MediaGenMode = decision.ResponseMode
-	preparation.MediaGenUnavailable = isGenerationMode(decision.ResponseMode) &&
+	preparation.VoiceChangeUnavailable = voiceChangeUnavailable
+	// The voice-change decline owns its turn: the generic audio gap would name
+	// a sound model or another provider's key, neither of which is the remedy.
+	preparation.MediaGenUnavailable = !voiceChangeUnavailable && isGenerationMode(decision.ResponseMode) &&
 		!decision.NeedsTools &&
 		!generationToolAvailable(h.toolRegistry(), decision.ResponseMode)
 
@@ -760,6 +795,13 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			toolNotices += "\n" + genNotice
 		} else {
 			toolNotices = genNotice
+		}
+	}
+	if voiceNotice := voiceChangeFallbackNotice(preparation.VoiceChangeUnavailable, airplaneModeActive(h.config), assistantContent); voiceNotice != "" {
+		if toolNotices != "" {
+			toolNotices += "\n" + voiceNotice
+		} else {
+			toolNotices = voiceNotice
 		}
 	}
 	if remediationNotice := toolErrorRemediationNotice(preparation.ToolResults, assistantContent); remediationNotice != "" {
@@ -2884,6 +2926,13 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 						// the model's own schema enum-checks the value);
 						// omitted for the model's default tone.
 						"emotion": map[string]any{"type": "string"},
+						// voice selects the speaking voice for generate_speech
+						// and the target voice for change_voice (a catalog
+						// name — the elevenlabs voice-changer takes no prompt,
+						// so without this key a format-schema planner could
+						// not name a voice at all). HarnessToolCall.Voice
+						// always carried it; only the grammar lacked it.
+						"voice": map[string]any{"type": "string"},
 						// add_sound_effects input: the dialogue-preservation
 						// toggle (Mirelo SFX). Omitted for the model's own
 						// default; false asks for sound effects only.
@@ -2989,6 +3038,13 @@ func (h *HarnessEngine) preparedResponseRequest(ctx context.Context, req ChatReq
 		if note := mediaGenUnavailableNote(preparation.MediaGenMode, airplaneModeActive(h.config), resolveSpeechProvider(h.config), resolveAudioProvider(h.config)); note != "" {
 			messages = append(messages, ChatMessage{Role: "user", Content: note})
 		}
+	}
+	// A voice-change ask with no voice changer registered rides the same
+	// channel: the final model learns why the clip cannot be re-voiced here
+	// and what to tell the user, instead of narrating a conversion that never
+	// ran.
+	if preparation.VoiceChangeUnavailable {
+		messages = append(messages, ChatMessage{Role: "user", Content: voiceChangeUnavailableNote(airplaneModeActive(h.config))})
 	}
 	// A document-mode turn whose authoring pass produced the document rides
 	// the same trailing-note channel: the final model learns the artifact is
@@ -4087,6 +4143,7 @@ var toolConsumedMediaKinds = map[string]map[string]bool{
 	"split_audio":         {"audio": true},
 	"join_audios":         {"audio": true},
 	"extend_audio":        {"audio": true},
+	voiceChangerToolName:  {"audio": true},
 	"replace_audio":       {"audio": true, "video": true},
 	"lip_sync":            {"audio": true, "video": true, "image": true},
 	"screenshot_video":    {"video": true},

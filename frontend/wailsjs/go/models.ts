@@ -633,6 +633,7 @@ export namespace main {
 	    audioCloneModel?: string;
 	    audioExtendModel?: string;
 	    voiceDesignModel?: string;
+	    voiceChangerModel?: string;
 	    transcribeModel?: string;
 	    upscaleModel?: string;
 	    inpaintModel?: string;
@@ -663,6 +664,7 @@ export namespace main {
 	        this.audioCloneModel = source["audioCloneModel"];
 	        this.audioExtendModel = source["audioExtendModel"];
 	        this.voiceDesignModel = source["voiceDesignModel"];
+	        this.voiceChangerModel = source["voiceChangerModel"];
 	        this.transcribeModel = source["transcribeModel"];
 	        this.upscaleModel = source["upscaleModel"];
 	        this.inpaintModel = source["inpaintModel"];
@@ -1073,6 +1075,7 @@ export namespace main {
 	    audioCloneModel?: string;
 	    audioExtendModel?: string;
 	    voiceDesignModel?: string;
+	    voiceChangerModel?: string;
 	    transcribeModel?: string;
 	    lipsyncImageModel?: string;
 	    lipsyncVideoModel?: string;
@@ -1125,6 +1128,7 @@ export namespace main {
 	        this.audioCloneModel = source["audioCloneModel"];
 	        this.audioExtendModel = source["audioExtendModel"];
 	        this.voiceDesignModel = source["voiceDesignModel"];
+	        this.voiceChangerModel = source["voiceChangerModel"];
 	        this.transcribeModel = source["transcribeModel"];
 	        this.lipsyncImageModel = source["lipsyncImageModel"];
 	        this.lipsyncVideoModel = source["lipsyncVideoModel"];

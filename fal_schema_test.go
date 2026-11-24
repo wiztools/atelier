@@ -222,6 +222,49 @@ func TestToSchemaPropertyUnwrapsNullableScalarUnion(t *testing.T) {
 	}
 }
 
+// TestParseModelInputSchemaExamples pins that a property's `examples` array
+// survives the parse — on the plain scalar, beside a nullable union (where fal
+// documents the examples on the parent), and through a $ref. The elevenlabs
+// voice-changer lists its voice names ONLY as examples (a plain string input
+// with no enum), so losing them would leave change_voice's planner with no
+// catalog to choose from.
+func TestParseModelInputSchemaExamples(t *testing.T) {
+	doc := `{"components":{"schemas":{
+		"Voice":{"type":"string","examples":["Darian","Talia"]},
+		"XInput":{"type":"object","properties":{
+			"voice":{"type":"string","default":"Rachel","examples":["Aria","Roger"]},
+			"tone":{"anyOf":[{"type":"string"},{"type":"null"}],"examples":["warm"]},
+			"target_voice":{"$ref":"#/components/schemas/Voice"},
+			"seed":{"type":"integer"}
+		}}}}}`
+	schema, err := parseModelInputSchema([]byte(doc))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	voice, ok := schema.property("voice")
+	if !ok {
+		t.Fatal("expected a voice property")
+	}
+	if strings.Join(voice.Examples, ",") != "Aria,Roger" || len(voice.Enum) != 0 {
+		t.Errorf("voice = examples %v enum %v, want the two examples and no enum", voice.Examples, voice.Enum)
+	}
+	if voice.Default != "Rachel" {
+		t.Errorf("voice default = %v, want Rachel (the examples must not disturb it)", voice.Default)
+	}
+	tone, _ := schema.property("tone")
+	if tone.Type != "string" || strings.Join(tone.Examples, ",") != "warm" {
+		t.Errorf("tone = type %q examples %v, want the unwrapped string keeping its parent-level example", tone.Type, tone.Examples)
+	}
+	target, _ := schema.property("target_voice")
+	if strings.Join(target.Examples, ",") != "Darian,Talia" {
+		t.Errorf("target_voice examples = %v, want the resolved shape's examples", target.Examples)
+	}
+	seed, _ := schema.property("seed")
+	if seed.Examples != nil {
+		t.Errorf("seed examples = %v, want nil for a property that declares none", seed.Examples)
+	}
+}
+
 // TestToSchemaPropertyUnwrapsMultiTypeUnionPrefersConcrete covers the seedream /
 // ideogram image_size shape: anyOf:[{$ref:...}, {type:string, enum:[...]}]. The
 // $ref branch can't be resolved without ref-following, so the parser must pick

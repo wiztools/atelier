@@ -110,6 +110,10 @@ type HarnessToolExecutionContext struct {
 	// returns the preview clip plus the designed voice's reusable id (see
 	// VoiceDesignRequest), same transport shape as GenerateAudio.
 	GenerateVoiceDesign func(ctx context.Context, req VoiceDesignRequest) (GeneratedAudio, error)
+	// ChangeVoice re-voices an attached recording as a named catalog voice —
+	// the change_voice tool's backend (ElevenLabs speech-to-speech on fal, the
+	// only provider). Same transport shape as GenerateAudio.
+	ChangeVoice func(ctx context.Context, req VoiceChangeRequest) (GeneratedAudio, error)
 	// GenerateAudioExtend lengthens an existing clip with generated audio —
 	// the extend sibling of GenerateAudio. It takes the canonical extend
 	// request (source clip, direction, added duration) and returns the longer
@@ -461,6 +465,9 @@ func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App)
 	}
 	if soundEffectsVideoConfigured(config) {
 		definitions = append(definitions, soundEffectsVideoToolDefinition(resolveAudioProvider(config)))
+	}
+	if voiceChangeConfigured(config) {
+		definitions = append(definitions, voiceChangeToolDefinition(ctx, config, app))
 	}
 	if transcribeAudioConfigured(config) {
 		definitions = append(definitions, transcribeAudioToolDefinition(config))
@@ -2405,6 +2412,301 @@ func voiceGenerationToolDefinition() HarnessToolDefinition {
 			})
 		},
 		Activity: audioGenerationActivity,
+	}
+}
+
+// voiceChangerToolName is the change_voice tool's registry name. It lives in
+// one place because three readers must agree on the spelling: the definition,
+// the consumed-media table, and the harness's absent-tool check (which reads
+// the name out of triage's toolTask).
+const voiceChangerToolName = "change_voice"
+
+// voiceChangeConfigured reports whether the change_voice tool should be
+// offered. The tool follows Models.AudioProvider and fal is its only backend,
+// so a replicate or runware selection closes the gate the way it closes
+// extend_audio under runware; inside the fal route a voice-changer model must
+// be configured AND a fal.ai key must be present. mergeAppConfig seeds the
+// slot the provider-selection way, so choosing fal.ai as the audio provider is
+// itself what enables the tool.
+func voiceChangeConfigured(config AppConfig) bool {
+	// fal-only: airplane mode drops the tool.
+	if airplaneModeActive(config) {
+		return false
+	}
+	if resolveAudioProvider(config) != "fal" {
+		return false
+	}
+	if strings.TrimSpace(config.Providers.Fal.VoiceChangerModel) == "" {
+		return false
+	}
+	return falKeyConfigured()
+}
+
+// resolveDefaultVoiceChangerModel returns the model change_voice uses when the
+// call doesn't override it. The constant is only a belt: the gate requires the
+// slot, and mergeAppConfig seeds it.
+func resolveDefaultVoiceChangerModel(config AppConfig) string {
+	if model := strings.TrimSpace(config.Providers.Fal.VoiceChangerModel); model != "" {
+		return model
+	}
+	return defaultFalVoiceChangerModel
+}
+
+// voiceCatalogEntry is one voice the change_voice planner can name: the
+// catalog's exact spelling plus a short descriptor it matches a user's
+// description against (gender first, then accent and delivery).
+type voiceCatalogEntry struct {
+	Name  string
+	Notes string
+}
+
+// elevenLabsVoiceCatalog describes the voices fal's elevenlabs voice-changer
+// schema listed on 2026-11-24 (testdata/fal-schemas/elevenlabs-voice-changer
+// .json pins them). The NAMES are the schema's; the descriptors are
+// ElevenLabs' published voice labels with the gender its premade voices are
+// known by — fal publishes bare names, and without a descriptor a planner
+// cannot map "a deep male voice" onto one. Soft guidance only: a wrong
+// descriptor mispicks a voice, it never fails a call.
+//
+// This table is the OFFLINE fallback, never the authority. ElevenLabs retires
+// these default voices on 2026-12-31 for new non-expiring ones, so
+// voiceChangerVoices replaces the list with whatever the endpoint's schema
+// currently carries (a new name then appears bare until it is described
+// here), and a name outside the list is passed through for the endpoint to
+// judge — fal publishes examples, not an enum.
+var elevenLabsVoiceCatalog = []voiceCatalogEntry{
+	{"Alice", "female, British, confident"},
+	{"Aria", "female, expressive, narration and audiobooks"},
+	{"Bill", "male, American, reliable, narration and conversation"},
+	{"Brian", "male, balanced, news and narration"},
+	{"Callum", "male, intense, fiery narration"},
+	{"Charlie", "male, Australian, casual"},
+	{"Charlotte", "female, raspy, sultry"},
+	{"Chris", "male, natural, narration"},
+	{"Daniel", "male, deep, compelling narration"},
+	{"Eric", "male, authentic, narration and podcasts"},
+	{"George", "male, British, warm storyteller"},
+	{"Jessica", "female, expressive, narration and stories"},
+	{"Liam", "male, articulate, factual narration"},
+	{"Lily", "female, British, warm, narration"},
+	{"Laura", "female, upbeat, ads and casual dialogue"},
+	{"Matilda", "female, friendly, self-assured"},
+	// The endpoint's default — not among its examples, but a valid target.
+	{"Rachel", "female, American, calm"},
+	{"River", "male, American, laid-back, young"},
+	{"Roger", "male, confident, narration and podcasts"},
+	{"Sarah", "female, soft, calm narratives"},
+	{"Will", "male, young, energetic"},
+}
+
+// voiceChangerVoices returns the voice names the change_voice description
+// offers the planner, and whether they came from the endpoint's own schema.
+// The schema is the authority: fal republishes the list when the catalog
+// changes, so the planner's choices follow within the schema cache's TTL and
+// no app update is needed when ElevenLabs swaps its default voices. With no
+// app, no schema, or a voice property that lists none, the built-in table
+// stands in. Either way the list is advice, never a closed set.
+//
+// Call it only past voiceChangeConfigured: the shared fetch loads the fal key
+// the way generation calls do (the videoModelSupportsAudio contract).
+func voiceChangerVoices(ctx context.Context, config AppConfig, app *App) ([]string, bool) {
+	fallback := make([]string, 0, len(elevenLabsVoiceCatalog))
+	for _, entry := range elevenLabsVoiceCatalog {
+		fallback = append(fallback, entry.Name)
+	}
+	if app == nil || app.client == nil {
+		return fallback, false
+	}
+	model := resolveDefaultVoiceChangerModel(config)
+	cache := newFalSchemaCache(app.client, config.Storage.Root)
+	schema := cache.Get(ctx, model)
+	overrides := loadFalOverrides(config.Storage.Root)
+	_, prop, ok := findNative(schema, overrides, "voice-change", model, "voice")
+	if !ok {
+		return fallback, false
+	}
+	voices := make([]string, 0, len(prop.Examples)+1)
+	seen := map[string]bool{}
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[strings.ToLower(name)] {
+			return
+		}
+		seen[strings.ToLower(name)] = true
+		voices = append(voices, name)
+	}
+	for _, example := range prop.Examples {
+		add(example)
+	}
+	// The default is a valid target too, though fal lists it beside the
+	// examples rather than among them.
+	if def, ok := prop.Default.(string); ok {
+		add(def)
+	}
+	if len(voices) == 0 {
+		return fallback, false
+	}
+	return voices, true
+}
+
+// lookupVoiceCatalog finds a voice's descriptor in the built-in table.
+func lookupVoiceCatalog(name string) (voiceCatalogEntry, bool) {
+	for _, entry := range elevenLabsVoiceCatalog {
+		if strings.EqualFold(entry.Name, strings.TrimSpace(name)) {
+			return entry, true
+		}
+	}
+	return voiceCatalogEntry{}, false
+}
+
+// canonicalVoiceName resolves a planner-supplied voice against the catalog's
+// spelling case-insensitively ("daniel" → "Daniel"). ok is false for a name
+// the list doesn't carry, which is never an error by itself — fal publishes
+// the list as examples, not an enum.
+func canonicalVoiceName(voices []string, voice string) (string, bool) {
+	voice = strings.TrimSpace(voice)
+	for _, name := range voices {
+		if name = strings.TrimSpace(name); name != "" && strings.EqualFold(name, voice) {
+			return name, true
+		}
+	}
+	return voice, false
+}
+
+// voiceChangeDescription assembles the change_voice tool description. The
+// catalog rides in because it follows the endpoint's schema (see
+// voiceChangerVoices): names the built-in table describes carry their
+// descriptor, and any other is listed bare.
+func voiceChangeDescription(voices []string) string {
+	listed := make([]string, 0, len(voices))
+	for _, name := range voices {
+		if entry, ok := lookupVoiceCatalog(name); ok {
+			listed = append(listed, fmt.Sprintf("%s (%s)", entry.Name, entry.Notes))
+		} else {
+			listed = append(listed, name)
+		}
+	}
+	return "Use this when the user asks to CHANGE THE VOICE of an existing recording — make it sound like a different person, gender, or accent while keeping the words, pacing, and emotion (\"change the voice in this clip\", \"make me sound like a deep-voiced man\", \"re-voice this in a woman's voice\"). The newest audio clip in the conversation is the source: a clip attached or @-mentioned this turn, or the most recent one. The configured fal.ai voice changer (ElevenLabs speech-to-speech) takes NO prompt — voice must be the NAME of a target voice from this catalog, exactly as spelled: " +
+		strings.Join(listed, ", ") +
+		". The voice cannot be described in words: pick the catalog voice closest to what the user asked for (gender first, then accent and delivery), and when the user names no target pick a clearly different voice of the same gender and say which one you chose in the brief. A designed or cloned voice id is not valid here. For a video's voice, chain extract_audio, then change_voice, then replace_audio in this same turn. To DESIGN a new voice from a description use generate_voice; to SPEAK written text use generate_speech; converting only a file's FORMAT (M4A to MP3) is the convert_audio edit, not this. The re-voiced clip replaces the source as the conversation's newest audio and is attached to the assistant reply."
+}
+
+// voiceChangeParamSchema is change_voice's planner-facing schema.
+func voiceChangeParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"voice": stringParam("Required — the NAME of the target voice from the catalog in the tool description, exactly as spelled (e.g. \"Daniel\"). The voice changer has no prompt: a voice described in words never reaches the model, so translate what the user asked for into the closest catalog name."),
+			"model": stringParam("Optional fal.ai voice-changer model override."),
+		},
+		"required": []string{"voice"},
+	}
+}
+
+// voiceChangeExecute runs the voice change: resolves the model, normalizes the
+// voice to the catalog's spelling, and stages the re-voiced clip. The caller
+// has already supplied the source clip — a missing one fails in the definition
+// before this runs.
+func voiceChangeExecute(ctx context.Context, tools HarnessToolExecutionContext, req VoiceChangeRequest, voices []string) (any, string, error) {
+	if tools.ChangeVoice == nil {
+		return nil, "voice change unavailable", errors.New("voice changing is not available in this context")
+	}
+	if strings.TrimSpace(req.Model) == "" {
+		req.Model = resolveDefaultVoiceChangerModel(tools.Config)
+	}
+	if strings.TrimSpace(req.Model) == "" {
+		return nil, "voice change unavailable", errors.New("no voice changer model is configured")
+	}
+	if voice, ok := canonicalVoiceName(voices, req.Voice); ok {
+		req.Voice = voice
+	}
+	// The target is the one input that decides what the result IS. Without it
+	// the endpoint would quietly use its own default voice — a conversion,
+	// but not the one anyone asked for — so the call fails here, before any
+	// request leaves the app.
+	if req.Voice == "" {
+		return nil, "voice change needs a target voice", fmt.Errorf(
+			"change_voice needs a target voice: pass voice as a catalog name (one of %s)", strings.Join(voices, ", "))
+	}
+	generated, err := tools.ChangeVoice(ctx, req)
+	if err != nil {
+		return nil, "voice change failed", err
+	}
+	if len(generated.Data) == 0 {
+		return nil, "voice change returned no audio", errors.New("the voice changer returned no audio data")
+	}
+	out, summary, err := stageGeneratedAudio(req.Model, "voice: "+req.Voice, generated)
+	if typed, ok := out.(ToolAudioResult); ok {
+		out = typed
+		summary = fmt.Sprintf("changed the voice to %s with %s", req.Voice, req.Model)
+	}
+	return out, summary, err
+}
+
+// voiceChangeActivity renders the fal change-voice command for change_voice's
+// ToolAudioResult — a sibling of audioExtendActivity, so the tool row reads
+// "fal change-voice <model>" rather than "fal generate".
+func voiceChangeActivity(result HarnessToolResult) HarnessToolActivity {
+	activity := defaultHarnessToolActivity(result)
+	if typed, ok := result.Result.(ToolAudioResult); ok {
+		activity.Command = []string{"fal", "change-voice", typed.Model}
+	}
+	return activity
+}
+
+// voiceChangeToolDefinition exposes the change_voice tool: re-voice an
+// attached or recent recording as a named catalog voice. The source is the
+// first attached audio — resolveTurnMedia already fills AttachedAudios with
+// this turn's attachments and @-mentions, falls back to the newest audio
+// artifact in conversation history, and the in-turn carry-forward feeds a clip
+// an earlier call in the same turn produced (the extracted track of a video,
+// so "change the voice in this video" chains). A missing source fails the call
+// rather than inventing a recording — the extend_audio rule.
+func voiceChangeToolDefinition(ctx context.Context, config AppConfig, app *App) HarnessToolDefinition {
+	voices, _ := voiceChangerVoices(ctx, config, app)
+	return HarnessToolDefinition{
+		Name:        voiceChangerToolName,
+		Title:       "Change voice",
+		Description: voiceChangeDescription(voices),
+		Example:     `{"name":"change_voice","voice":"Daniel"}`,
+		Risk:        HarnessToolRiskRead,
+		ParamSchema: voiceChangeParamSchema(),
+		Validate: func(prefix string, call HarnessToolCall) []string {
+			voice := strings.TrimSpace(call.Voice)
+			if voice == "" {
+				if strings.TrimSpace(call.Content) != "" {
+					return []string{prefix + ".voice is required for change_voice and must be a catalog voice NAME (the tool description lists them) — the tool has no content or prompt, so a voice described in words cannot reach the model"}
+				}
+				return []string{prefix + ".voice is required for change_voice (the NAME of the target voice — the tool description lists the catalog)"}
+			}
+			if _, ok := canonicalVoiceName(voices, voice); ok {
+				return nil
+			}
+			// Off the list, a single word may still be a valid name the list
+			// doesn't show (fal publishes examples, not an enum), so it rides
+			// for the endpoint to judge. Words with spaces are a DESCRIPTION
+			// the endpoint cannot read: correct it here instead of spending a
+			// planner round on the 422.
+			if strings.ContainsAny(voice, " \t,") {
+				return []string{fmt.Sprintf(
+					"%s.voice %q is a description, not a voice name — change_voice takes a catalog NAME: one of %s",
+					prefix, voice, strings.Join(voices, ", "))}
+			}
+			return nil
+		},
+		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			source := firstAttachedAudio(tools.AttachedAudios)
+			if source == "" {
+				return nil, "voice change needs an audio clip", errors.New("change_voice needs an audio clip: none is attached and the conversation has no earlier audio")
+			}
+			return voiceChangeExecute(ctx, tools, VoiceChangeRequest{
+				Model:       strings.TrimSpace(call.Model),
+				Voice:       strings.TrimSpace(call.Voice),
+				SourceAudio: source,
+			}, voices)
+		},
+		Activity: voiceChangeActivity,
 	}
 }
 

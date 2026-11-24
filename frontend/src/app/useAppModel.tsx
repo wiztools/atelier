@@ -138,7 +138,7 @@ export function useAppModel() {
     falImageEditModel, falInpaintModel, falLipsyncImageModel, falLipsyncVideoModel, falModel,
     falSoundEffectsModel, falSoundEffectsVideoModel, falTranscribeModel, falUpscaleModel,
     falVideoExtendModel, falVideoImageModel, falVideoKeyframeModel, falVideoModel, falVideoMotionModel, falVideoCharacterModel,
-    falVideoReframeModel, falVideoRestyleModel, falVideoUpscaleModel, falVoiceDesignModel, ffmpegBinary,
+    falVideoReframeModel, falVideoRestyleModel, falVideoUpscaleModel, falVoiceDesignModel, falVoiceChangerModel, ffmpegBinary,
     ffprobeBinary, globalModelSelection, harnessModel, harnessModels, harnessProvider, imageAspectRatio,
     imageModel, imageProvider, imageSizePreset, imageSteps, inpaintProvider, lipsyncProvider, characterProvider, magickBinary,
     mediaTimeoutMinutes, model, ollamaNumCtx, ollamaSpeechModel, openaiCompatibleBaseURL,
@@ -185,6 +185,7 @@ export function useAppModel() {
     falVideoRestyleModels,
     falVideoUpscaleModels,
     falVoiceDesignModels,
+    falVoiceChangerModels,
     openRouterModels,
     openaiCompatibleModelOptions,
     openaiCompatibleModels,
@@ -877,6 +878,8 @@ export function useAppModel() {
       replicateSoundEffectsModel: overrides.soundEffectsModel && audioProvider === 'replicate' ? overrides.soundEffectsModel : global.replicateSoundEffectsModel,
       replicateSoundEffectsVideoModel: overrides.soundEffectsVideoModel && audioProvider === 'replicate' ? overrides.soundEffectsVideoModel : global.replicateSoundEffectsVideoModel,
       falVoiceDesignModel: overrides.voiceDesignModel || global.falVoiceDesignModel,
+      // fal-only like voice design, so the audio provider never reroutes it.
+      falVoiceChangerModel: overrides.voiceChangerModel || global.falVoiceChangerModel,
       falAudioExtendModel: overrides.audioExtendModel && audioProvider !== 'replicate' ? overrides.audioExtendModel : global.falAudioExtendModel,
       replicateAudioExtendModel: overrides.audioExtendModel && audioProvider === 'replicate' ? overrides.audioExtendModel : global.replicateAudioExtendModel,
       transcriptionProvider: effectiveTranscriptionProvider,
@@ -1070,6 +1073,7 @@ export function useAppModel() {
       if (patch.falSoundEffectsVideoModel !== undefined || patch.replicateSoundEffectsVideoModel !== undefined) next.add('soundEffectsVideoModel');
       if (patch.falAudioExtendModel !== undefined || patch.replicateAudioExtendModel !== undefined) next.add('audioExtendModel');
       if (patch.falVoiceDesignModel !== undefined) next.add('voiceDesignModel');
+      if (patch.falVoiceChangerModel !== undefined) next.add('voiceChangerModel');
       if (patch.falAudioExtendModel !== undefined) next.add('audioExtendModel');
       if (patch.falTranscribeModel !== undefined || patch.replicateTranscribeModel !== undefined) next.add('transcribeModel');
       if (patch.transcriptionProvider !== undefined) next.add('transcriptionProvider');
@@ -1196,6 +1200,7 @@ export function useAppModel() {
           next.runwareSoundEffectsVideoModel = global.runwareSoundEffectsVideoModel;
           break;
         case 'voiceDesignModel': next.falVoiceDesignModel = global.falVoiceDesignModel; break;
+        case 'voiceChangerModel': next.falVoiceChangerModel = global.falVoiceChangerModel; break;
         case 'audioExtendModel':
           next.falAudioExtendModel = global.falAudioExtendModel;
           next.replicateAudioExtendModel = global.replicateAudioExtendModel;
@@ -1459,6 +1464,7 @@ export function useAppModel() {
     falSoundEffectsVideoModels,
     falAudioExtendModels,
     falVoiceDesignModels,
+    falVoiceChangerModels,
     falTranscribeModels,
     falUpscaleModels,
     falLipsyncImageModels,

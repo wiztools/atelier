@@ -649,6 +649,11 @@ func configuredFalEndpointIDs(config AppConfig, extra ...string) []string {
 			resolveDefaultLipsyncImageModel(config, "fal"),
 			resolveDefaultLipsyncVideoModel(config, "fal"))
 	}
+	// change_voice follows AudioProvider and only fal serves it, so its
+	// endpoint joins the batch only on the fal route — the lipsync rule.
+	if resolveAudioProvider(config) == "fal" {
+		ids = append(ids, resolveDefaultVoiceChangerModel(config))
+	}
 	ids = append(ids, extra...)
 	return ids
 }

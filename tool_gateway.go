@@ -1871,6 +1871,68 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			generated.Notices = notices
 			return generated, err
 		}
+		gateway.tools.ChangeVoice = func(ctx context.Context, req VoiceChangeRequest) (GeneratedAudio, error) {
+			// fal-only: airplane mode refuses the call.
+			if err := airplaneMediaError(config, "change_voice"); err != nil {
+				return GeneratedAudio{}, err
+			}
+			// Probe the source clip's length while its bytes are still at hand:
+			// the voice changer bills per minute of audio, and after the upload
+			// below only a URL remains.
+			if seconds, ok := mediasniff.DataURLAudioDuration(req.SourceAudio); ok {
+				req.SourceDurationSeconds = seconds
+			}
+			apiKey, err := loadFalAPIKey()
+			if err != nil {
+				return GeneratedAudio{}, err
+			}
+			if strings.TrimSpace(apiKey) == "" {
+				return GeneratedAudio{}, errFalKeyNotConfigured
+			}
+			client := newFalClient(app.client, apiKey)
+			// The source always goes through fal's CDN storage — the lipsync
+			// pattern — and is named for its real container, because the hosted
+			// URL's extension is what the decoder on the other end sees (a WAV
+			// uploaded as ".mp3" is a mismatch waiting to be rejected). Fail-soft
+			// like the siblings: an upload failure leaves the data URI in place
+			// and fal's own error surfaces.
+			if strings.TrimSpace(req.SourceAudio) != "" {
+				filename := "voice-source" + audioExtensionForMediaType(dataURLMediaType(req.SourceAudio))
+				if resolved, err := client.resolveMediaURLHosted(ctx, req.SourceAudio, "audio/mpeg", filename); err == nil {
+					req.SourceAudio = resolved
+				}
+			}
+			schema := schemaCache.Get(ctx, req.Model)
+			body, notices, err := resolveVoiceChangeBody(schema, req, falOverrides)
+			if err != nil {
+				return GeneratedAudio{Notices: notices}, err
+			}
+			job := &mediaJob{}
+			client.jobSink = job
+			generated, recovered, err := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+				func(jctx context.Context) (GeneratedAudio, error) {
+					return client.GenerateAudio(jctx, req.Model, body)
+				},
+				client.CancelMediaJob,
+				client.RecoverAudioJob,
+			)
+			if err == nil && recovered {
+				notices = append(notices, mediaGenerationRecoveredNotice)
+			}
+			if err == nil {
+				// The endpoint bills per minute, so the estimate is the source
+				// clip's own length (the output runs the same length); fal's
+				// reported charge for the request still wins wherever the key
+				// can read billing. An unmeasurable source prices nothing
+				// rather than guessing — the engine layer then stamps
+				// CostUnknown.
+				hints := falBillingHints{Requests: 1, Seconds: req.SourceDurationSeconds}
+				hints.RequestID = job.ID
+				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)
+			}
+			generated.Notices = notices
+			return generated, err
+		}
 		gateway.tools.TranscribeAudio = func(ctx context.Context, req TranscribeAudioRequest) (GeneratedTranscript, error) {
 			// Airplane mode refuses the call here (the resolver routes to the
 			// local whisper backend in that mode, so this wrapper is the belt

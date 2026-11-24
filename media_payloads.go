@@ -551,6 +551,24 @@ func audioExtensionForMediaType(mediaType string) string {
 	}
 }
 
+// dataURLMediaType reads the media type off a data URL's header without
+// decoding its payload ("data:audio/wav;base64,…" → "audio/wav"). Empty for
+// anything that is not a data URL or declares no type.
+func dataURLMediaType(reference string) string {
+	reference = strings.TrimSpace(reference)
+	if !strings.HasPrefix(reference, "data:") {
+		return ""
+	}
+	header := strings.TrimPrefix(reference, "data:")
+	if comma := strings.Index(header, ","); comma >= 0 {
+		header = header[:comma]
+	}
+	if semicolon := strings.Index(header, ";"); semicolon >= 0 {
+		header = header[:semicolon]
+	}
+	return strings.TrimSpace(header)
+}
+
 // isAudioBytes reports whether data looks like a container an <audio> tag can
 // play: MP3 (ID3 tag or MPEG frame sync), WAV/RIFF, OGG, FLAC, or MP4/M4A
 // (ISO base media "ftyp"). Returns false otherwise so a non-audio download is

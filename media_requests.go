@@ -391,6 +391,20 @@ type VoiceDesignRequest struct {
 	PreviewText string `json:"previewText,omitempty"`
 }
 
+// VoiceChangeRequest is the input to change_voice: re-voice an existing clip
+// as a named catalog voice. Voice is the target's NAME in the endpoint's own
+// vocabulary — a plain string, because the elevenlabs voice-changer takes no
+// prompt; SourceAudio is the recording to convert (data URL); and
+// SourceDurationSeconds is its sniffed length, computed before the clip is
+// uploaded while its bytes are still at hand, since it is what a per-minute
+// endpoint bills.
+type VoiceChangeRequest struct {
+	Model                 string  `json:"model"`
+	Voice                 string  `json:"voice,omitempty"`
+	SourceAudio           string  `json:"sourceAudio,omitempty"`
+	SourceDurationSeconds float64 `json:"sourceDurationSeconds,omitempty"`
+}
+
 // AudioExtendRequest is the input to extend_audio: lengthen an existing clip
 // by generated audio. Duration is the length of the ADDED audio in seconds
 // (a string canonical, like video extend), not the total output length.
