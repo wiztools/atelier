@@ -52,7 +52,7 @@ same(configValues(asConfig({providers: {local: {whisper: {chunkMinutes: 0}}}})).
 const fal = Object.fromEntries([
   'model', 'imageEditModel', 'videoModel', 'videoImageModel', 'videoKeyframeModel', 'videoExtendModel',
   'videoMotionModel', 'videoUpscaleModel', 'videoReframeModel', 'videoRestyleModel', 'videoCharacterModel', 'audioModel',
-  'soundEffectsModel', 'soundEffectsVideoModel', 'voiceDesignModel', 'audioCloneModel', 'audioExtendModel',
+  'soundEffectsModel', 'soundEffectsVideoModel', 'voiceDesignModel', 'voiceChangerModel', 'audioCloneModel', 'audioExtendModel',
   'transcribeModel', 'upscaleModel', 'inpaintModel', 'lipsyncImageModel', 'lipsyncVideoModel',
 ].map((field) => [field, `fal-ai/custom/${field}`]));
 const replicate = Object.fromEntries([

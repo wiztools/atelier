@@ -785,6 +785,58 @@ func (a *App) ListFalVoiceDesignModels() ([]FalModel, error) {
 	return design, nil
 }
 
+// isFalVoiceChangerModel reports whether a fal catalog entry is a voice-changer
+// endpoint — one that re-voices an existing recording as a named voice
+// (ElevenLabs voice-changer) — rather than designing, cloning, or speaking.
+// The marker is the "voice-changer" phrase in the id or tags, which overlaps
+// none of the neighboring pickers' predicates (design's voice-design and
+// create-voice, the speech and sound-effect markers). Mirrors
+// isFalVoiceDesignModel's defensive id+tags matching.
+func isFalVoiceChangerModel(model FalModel) bool {
+	id := strings.ToLower(model.ID)
+	if strings.Contains(id, "voice-changer") || strings.Contains(id, "voice_changer") {
+		return true
+	}
+	for _, tag := range model.Tags {
+		tag = strings.ToLower(tag)
+		if strings.Contains(tag, "voice-changer") || strings.Contains(tag, "voice changer") {
+			return true
+		}
+	}
+	return false
+}
+
+// ListFalVoiceChangerModels returns fal's voice-changer catalog for the
+// Settings voice-changer-model picker (the change_voice tool's endpoint). The
+// endpoint is audio in, audio out, but fal files its voice endpoints under
+// either the audio-to-audio or the text-to-speech category, so both are read
+// and kept only when isFalVoiceChangerModel matches. Both categories are
+// already fetched by the extend and the speech/design pickers, so the shared
+// cache serves this one. The mapped default is always included even when the
+// fetch or filter misses it — a catalog re-shuffle then degrades to a short
+// static list instead of an empty picker (the ListFalVoiceDesignModels
+// contract).
+func (a *App) ListFalVoiceChangerModels() ([]FalModel, error) {
+	changers := []FalModel{{ID: defaultFalVoiceChangerModel}}
+	seen := map[string]bool{defaultFalVoiceChangerModel: true}
+	for _, category := range []string{falAudioToAudioCategory, falTextToSpeechCategory} {
+		models, err := a.cachedFalCategoryModels(category)
+		if err != nil {
+			// One category failing keeps the other; both failing keeps the
+			// static default.
+			continue
+		}
+		for _, model := range models {
+			if model.ID == "" || seen[model.ID] || !isFalVoiceChangerModel(model) {
+				continue
+			}
+			seen[model.ID] = true
+			changers = append(changers, model)
+		}
+	}
+	return changers, nil
+}
+
 // ListFalSoundEffectModels returns fal's text-to-audio catalog (music and
 // sound effects) for the Settings sound-effects-model picker (the
 // generate_sound tool's endpoint), with speech endpoints filtered out — fal

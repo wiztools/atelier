@@ -112,12 +112,17 @@ type ConfigFal struct {
 	// audio sibling of VideoExtendModel). VoiceDesignModel is the voice-design
 	// endpoint used by the generate_voice tool (MiniMax voice-design by
 	// default): a written description of a voice becomes a preview clip plus a
-	// reusable voice id.
+	// reusable voice id. VoiceChangerModel is the voice-changer endpoint used
+	// by the change_voice tool (ElevenLabs speech-to-speech by default): an
+	// attached or recent recording is re-voiced as a named catalog voice. It
+	// follows Models.AudioProvider — offered only while that provider is fal,
+	// the way the sound slots follow it.
 	AudioModel        string `json:"audioModel,omitempty"`
 	SoundEffectsModel string `json:"soundEffectsModel,omitempty"`
 	AudioCloneModel   string `json:"audioCloneModel,omitempty"`
 	AudioExtendModel  string `json:"audioExtendModel,omitempty"`
 	VoiceDesignModel  string `json:"voiceDesignModel,omitempty"`
+	VoiceChangerModel string `json:"voiceChangerModel,omitempty"`
 	// TranscribeModel is the speech-to-text endpoint used by transcribe_audio
 	// when the transcription provider is fal (fal-ai/wizper by default). The
 	// local whisper CLI is the provider-independent alternative — see
@@ -972,6 +977,13 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	// ask routes to it without a Settings visit.
 	if strings.TrimSpace(config.Providers.Fal.AudioModel) != "" && strings.TrimSpace(config.Providers.Fal.SoundEffectsVideoModel) == "" {
 		config.Providers.Fal.SoundEffectsVideoModel = defaultFalSoundEffectsVideoModel
+	}
+	// Seed the voice-changer endpoint the provider-selection way, not the
+	// speech-implied way above: change_voice follows AudioProvider (the sound
+	// slots' rule), so choosing fal.ai as the audio provider is itself what
+	// enables it. The gate still needs the fal key.
+	if config.Models.AudioProvider == "fal" && strings.TrimSpace(config.Providers.Fal.VoiceChangerModel) == "" {
+		config.Providers.Fal.VoiceChangerModel = defaultFalVoiceChangerModel
 	}
 	// Seed the Replicate sound pair the provider-selection way (the image and
 	// inpaint seeds above): selecting replicate as the AudioProvider without a

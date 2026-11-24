@@ -290,6 +290,10 @@ export function ListFalVideoUpscaleModels() {
   return window['go']['main']['App']['ListFalVideoUpscaleModels']();
 }
 
+export function ListFalVoiceChangerModels() {
+  return window['go']['main']['App']['ListFalVoiceChangerModels']();
+}
+
 export function ListFalVoiceDesignModels() {
   return window['go']['main']['App']['ListFalVoiceDesignModels']();
 }

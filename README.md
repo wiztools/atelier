@@ -33,6 +33,7 @@ Every turn runs through an agentic loop rather than a single model call:
 | `generate_video` | read-only | fal.ai text-to-video or image-to-video (animates an attached image); registered only when a fal video model and key are configured. |
 | `generate_speech` | read-only | fal.ai text-to-speech on the configured speech model (`audioModel`); registered only when a fal speech model and key are configured. |
 | `generate_sound` | read-only | fal.ai music or sound-effect generation on the configured sound-effects model (`soundEffectsModel`); registered only when a fal sound model and key are configured. |
+| `change_voice` | read-only | fal.ai voice changing (`fal-ai/elevenlabs/voice-changer`) on an attached or recent audio clip — the recording keeps its words and delivery and comes back in a named target voice; registered only while the audio provider is fal.ai and a fal key is configured. |
 | `transcribe_audio` | read-only | fal.ai speech-to-text (fal-ai/wizper by default) on an attached audio clip; registered only when a fal key is configured. The transcript flows back as tool evidence. |
 | `upscale_image` | read-only | fal.ai image upscaling on an attached image; registered only when a fal key is configured. |
 

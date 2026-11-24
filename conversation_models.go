@@ -77,9 +77,14 @@ type ConversationModelOverrides struct {
 	AudioCloneModel        string `json:"audioCloneModel,omitempty"`
 	AudioExtendModel       string `json:"audioExtendModel,omitempty"`
 	VoiceDesignModel       string `json:"voiceDesignModel,omitempty"`
-	TranscribeModel        string `json:"transcribeModel,omitempty"`
-	LipsyncImageModel      string `json:"lipsyncImageModel,omitempty"`
-	LipsyncVideoModel      string `json:"lipsyncVideoModel,omitempty"`
+	// VoiceChangerModel overrides change_voice's model. fal-only like voice
+	// design and cloning, so it lands 1:1 onto ConfigFal.VoiceChangerModel
+	// whichever audio provider is pinned — an override on a non-fal
+	// AudioProvider is dead config there until the provider is switched back.
+	VoiceChangerModel string `json:"voiceChangerModel,omitempty"`
+	TranscribeModel   string `json:"transcribeModel,omitempty"`
+	LipsyncImageModel string `json:"lipsyncImageModel,omitempty"`
+	LipsyncVideoModel string `json:"lipsyncVideoModel,omitempty"`
 	// LipsyncProvider overrides lip_sync's backend ("fal" | "replicate") —
 	// the InpaintProvider pattern one tool over: its own dimension, since
 	// lipsync spans all three media kinds and follows neither the image nor
@@ -141,7 +146,7 @@ func normalizeConversationModelOverrides(o ConversationModelOverrides) Conversat
 		&o.ImageEditModel, &o.UpscaleModel,
 		&o.InpaintProvider, &o.InpaintModel,
 		&o.VideoExtendModel, &o.VideoMotionModel, &o.VideoKeyframeModel, &o.VideoUpscaleModel, &o.VideoReframeModel, &o.VideoRestyleModel, &o.CharacterProvider, &o.VideoCharacterModel,
-		&o.SpeechProvider, &o.AudioModel, &o.SoundEffectsModel, &o.SoundEffectsVideoModel, &o.AudioCloneModel, &o.AudioExtendModel, &o.VoiceDesignModel, &o.TranscribeModel,
+		&o.SpeechProvider, &o.AudioModel, &o.SoundEffectsModel, &o.SoundEffectsVideoModel, &o.AudioCloneModel, &o.AudioExtendModel, &o.VoiceDesignModel, &o.VoiceChangerModel, &o.TranscribeModel,
 		&o.LipsyncImageModel, &o.LipsyncVideoModel, &o.LipsyncProvider, &o.AudioProvider,
 		&o.TranscriptionProvider, &o.WhisperModel, &o.WhisperBinary, &o.WhisperVADModel,
 		&o.ImageAspectRatio, &o.ImageSizePreset, &o.VideoDuration, &o.VideoAspectRatio, &o.VideoResolution, &o.SoundDuration, &o.AudioExtendDuration,
@@ -596,6 +601,9 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 	}
 	if o.VoiceDesignModel != "" {
 		config.Providers.Fal.VoiceDesignModel = o.VoiceDesignModel
+	}
+	if o.VoiceChangerModel != "" {
+		config.Providers.Fal.VoiceChangerModel = o.VoiceChangerModel
 	}
 	if o.TranscribeModel != "" {
 		// The override lands on the slot the effective transcription

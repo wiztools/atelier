@@ -212,6 +212,9 @@ func TestToolConsumedMediaKindsMatchRegistry(t *testing.T) {
 	definitions = append(definitions, speechGenerationToolDefinition(false, "fal"))
 	definitions = append(definitions, soundEffectsGenerationToolDefinition("fal"))
 	definitions = append(definitions, extendAudioToolDefinition("fal"))
+	// A nil App keeps this constructor off the schema read: the voice list
+	// falls back to the built-in table, which is all the name check needs.
+	definitions = append(definitions, voiceChangeToolDefinition(context.Background(), config, nil))
 	definitions = append(definitions, transcribeAudioToolDefinition(config))
 	definitions = append(definitions, ffmpegToolDefinitions(config)...)
 	// The image tool constructors are backend-gated (they return empty when

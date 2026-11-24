@@ -39,7 +39,8 @@ func falTestPricingResponse() *http.Response {
 		`{"endpoint_id":"fal-ai/wizper","unit_price":0.001,"unit":"second","currency":"USD"},` +
 		`{"endpoint_id":"fal-ai/esrgan","unit_price":0.01,"unit":"image","currency":"USD"},` +
 		`{"endpoint_id":"fal-ai/sync-lipsync/v3/image-to-video","unit_price":0.15,"unit":"request","currency":"USD"},` +
-		`{"endpoint_id":"fal-ai/sync-lipsync/v2/pro","unit_price":0.15,"unit":"request","currency":"USD"}` +
+		`{"endpoint_id":"fal-ai/sync-lipsync/v2/pro","unit_price":0.15,"unit":"request","currency":"USD"},` +
+		`{"endpoint_id":"fal-ai/elevenlabs/voice-changer","unit_price":0.3,"unit":"minutes","currency":"USD"}` +
 		`],"next_cursor":null,"has_more":false}`)
 }
 
@@ -50,13 +51,24 @@ func falTestPricingResponse() *http.Response {
 // events — the state of a request whose billing has not posted yet — so these
 // tests keep pinning the estimate, which is what that lookup falls back to.
 // Tests that need a reported charge serve the route themselves
-// (TestFalReportedCost… in fal_pricing_test.go).
+// (TestFalReportedCost… in fal_pricing_test.go). One non-platform read rides
+// the same guard: the OpenAPI schema of the voice-changer endpoint. The
+// change_voice registry entry reads it once per stream to list the planner's
+// voices (voiceChangerVoices — the same build-time read the video narration
+// check makes), so every strict transport in a fal-keyed test sees that GET
+// whether or not the test exercises the tool.
 func falTestPlatformResponse(req *http.Request) (*http.Response, bool) {
 	switch {
 	case req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, "/v1/models/billing-events"):
 		return jsonResponse(`{"billing_events":[],"next_cursor":null,"has_more":false}`), true
 	case strings.HasPrefix(req.URL.Path, "/v1/models/pricing"):
 		return falTestPricingResponse(), true
+	case req.Method == http.MethodGet && req.URL.Query().Get("endpoint_id") == defaultFalVoiceChangerModel:
+		raw, err := os.ReadFile(filepath.Join("testdata", "fal-schemas", "elevenlabs-voice-changer.json"))
+		if err != nil {
+			return nil, false
+		}
+		return jsonResponse(string(raw)), true
 	}
 	return nil, false
 }

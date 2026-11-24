@@ -133,6 +133,18 @@ const (
 	// "cloned voices", one per call, not per preview character); the voice
 	// id feeds generate_speech on a MiniMax speech endpoint as its voice input.
 	defaultFalVoiceDesignModel = "fal-ai/minimax/voice-design"
+	// defaultFalVoiceChangerModel is the voice-changer endpoint used by the
+	// change_voice tool when none is configured — ElevenLabs speech-to-speech
+	// keeps an attached recording's delivery, pacing, and emotion and re-voices
+	// it as a named catalog voice. Required: audio_url. Optional: voice (a
+	// plain string naming a premade voice, default "Rachel" — the schema's
+	// examples list the catalog, which is why SchemaProperty keeps Examples),
+	// model_id, four tuning dials, remove_background_noise, seed, and
+	// output_format (mp3_44100_128 by default); fal bills it per minute. There
+	// is no prompt input: the target is a voice NAME, never a description.
+	// Pinned in testdata/fal-schemas/elevenlabs-voice-changer.json
+	// (captured 2026-11-24) and mapped by resolveVoiceChangeBody.
+	defaultFalVoiceChangerModel = "fal-ai/elevenlabs/voice-changer"
 	// defaultFalAudioExtendModel is the audio-extend endpoint used by the
 	// extend_audio tool when none is configured — stable-audio-25/inpaint
 	// appends or prepends generated audio while preserving the unmasked original

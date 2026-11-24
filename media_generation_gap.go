@@ -217,3 +217,52 @@ func mediaGenFallbackNotice(unavailable bool, mode string, assistantContent stri
 	}
 	return notice
 }
+
+// voiceChangeUnavailableNote is the code-authored note delivered to the final
+// model — as its own trailing user message, never in the system prompt — when
+// triage routed the turn as a voice change but change_voice is not registered.
+// Voice changing runs on fal.ai alone and follows the AudioProvider, so the
+// note names every reason the tool can be absent in ONE remedy instead of
+// making the model guess which applies: another audio provider, no fal.ai
+// key, or an empty model slot. The airplane variant names airplane mode as the
+// cause — "add a fal.ai key" would be false advice while the mode blocks
+// every cloud provider. The note also draws the boundary against the tools
+// the turn must NOT be answered with: a designed voice or generated speech is
+// not a conversion of the user's clip.
+func voiceChangeUnavailableNote(airplane bool) string {
+	if airplane {
+		return "Atelier note: the user's latest request asks Atelier to change the voice in an audio clip, " +
+			"but airplane mode is on, so Atelier will not contact a cloud provider and has no local tool that can do it. " +
+			"Do not claim the voice was changed, queued, or is processing, and do not attempt it through other tools. " +
+			"Tell the user plainly that voice changing runs on fal.ai, which airplane mode blocks: turning it off in Settings → Providers re-enables it."
+	}
+	return "Atelier note: the user's latest request asks Atelier to change the voice in an audio clip, " +
+		"but the voice changer is not enabled on this machine, so Atelier has no tool that can do it. " +
+		"Do not claim the voice was changed, queued, or is processing, and do not attempt it through other tools — " +
+		"designing a new voice or generating speech is not a conversion of the user's clip. " +
+		"Tell the user plainly that voice changing runs on fal.ai and needs a one-time setup: " +
+		"set Audio Provider to fal.ai and pick a Voice Changer model in Settings → Models, " +
+		"and add a fal.ai API key in Settings → Providers if none is set — Atelier enables it automatically on the next message."
+}
+
+// voiceChangeFallbackNotice returns the deterministic one-line blockquote for
+// the chat reply when the voice changer is absent and the final model's answer
+// did not already name the remedy — mirroring mediaGenFallbackNotice. Empty
+// when the tool was available, or the answer already pointed the user at
+// fal.ai or the Models settings.
+func voiceChangeFallbackNotice(unavailable bool, airplane bool, assistantContent string) string {
+	if !unavailable {
+		return ""
+	}
+	lower := strings.ToLower(assistantContent)
+	if airplane {
+		if strings.Contains(lower, "airplane mode") {
+			return ""
+		}
+		return "> ⚠️ Voice changing is unavailable while airplane mode is on — turn it off in Settings → Providers to use fal.ai's voice changer."
+	}
+	if strings.Contains(lower, "fal.ai") || strings.Contains(lower, "settings → models") {
+		return ""
+	}
+	return "> ⚠️ Voice changing isn't set up yet — it runs on fal.ai: set Audio Provider to fal.ai and pick a Voice Changer model in Settings → Models (with a fal.ai API key in Settings → Providers), and Atelier picks it up automatically."
+}

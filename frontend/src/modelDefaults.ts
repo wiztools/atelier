@@ -57,6 +57,11 @@ const defaultFalSoundEffectsModel = 'fal-ai/elevenlabs/sound-effects/v2';
 // fal_client.go.
 const defaultFalSoundEffectsVideoModel = 'mirelo-ai/sfx2.0/video-to-video';
 const defaultFalVoiceDesignModel = 'fal-ai/minimax/voice-design';
+// Voice-changer endpoint (the change_voice tool) — ElevenLabs speech-to-speech
+// re-voices an attached recording as a named catalog voice. fal-only, and
+// offered only while the Audio Provider is fal.ai. Mirrors the Go constant in
+// fal_client.go.
+const defaultFalVoiceChangerModel = 'fal-ai/elevenlabs/voice-changer';
 const defaultFalAudioExtendModel = 'fal-ai/stable-audio-25/inpaint';
 const defaultFalTranscribeModel = 'fal-ai/wizper';
 const defaultReplicateTranscribeModel = 'openai/whisper';
@@ -256,6 +261,7 @@ export {
   defaultFalSoundEffectsModel,
   defaultFalSoundEffectsVideoModel,
   defaultFalVoiceDesignModel,
+  defaultFalVoiceChangerModel,
   defaultFalAudioExtendModel,
   defaultFalTranscribeModel,
   defaultReplicateTranscribeModel,

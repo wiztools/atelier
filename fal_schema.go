@@ -41,8 +41,14 @@ type SchemaProperty struct {
 	// duration must be sent as a JSON number, not a string (see conv_4feb919a:
 	// happy-horse 422'd on "10" because it expects integer 10). Empty for the
 	// array/object kinds, which carry their structure in Items/Nested instead.
-	Type     string
-	Enum     []string
+	Type string
+	Enum []string
+	// Examples holds the property's OpenAPI `examples` array as strings. Unlike
+	// Enum it is illustrative, never a closed set — the elevenlabs voice-changer
+	// endpoint publishes its voice names this way (a plain string input with no
+	// enum), which is the only place a tool can read the catalog its planner
+	// should choose from. Nil when the property declares none.
+	Examples []string
 	Default  any
 	Nested   map[string]SchemaProperty // populated when Kind == schemaObject
 	Items    *SchemaProperty           // populated when Kind == schemaArray (may be nil)
@@ -139,6 +145,7 @@ type openAPIDoc struct {
 type openAPIProp struct {
 	Type       string                     `json:"type"`
 	Enum       []any                      `json:"enum"`
+	Examples   []any                      `json:"examples"`
 	Default    json.RawMessage            `json:"default"`
 	Properties map[string]json.RawMessage `json:"properties"`
 	Items      json.RawMessage            `json:"items"`
@@ -260,6 +267,11 @@ func toSchemaProperty(name string, raw json.RawMessage, components map[string]js
 				resolved.Description = p.Description
 			}
 			carryAreaBounds(&resolved, p)
+			// Examples ride the parent or the resolved shape depending on the
+			// doc; like the description and default, they survive the resolve.
+			if len(resolved.Examples) == 0 {
+				resolved.Examples = enumStrings(p.Examples)
+			}
 			if resolved.Default == nil && len(p.Default) > 0 {
 				var d any
 				if err := json.Unmarshal(p.Default, &d); err == nil {
@@ -309,10 +321,13 @@ func toSchemaProperty(name string, raw json.RawMessage, components map[string]js
 					unwrapped.Default = d
 				}
 			}
+			if len(unwrapped.Examples) == 0 {
+				unwrapped.Examples = enumStrings(p.Examples)
+			}
 			return unwrapped
 		}
 	}
-	sp := SchemaProperty{Name: name, Kind: schemaScalar, Type: p.Type, Description: p.Description, Enum: enumStrings(p.Enum), Minimum: p.Minimum, Maximum: p.Maximum, MinArea: p.XFal.MinArea, MaxArea: p.XFal.MaxArea}
+	sp := SchemaProperty{Name: name, Kind: schemaScalar, Type: p.Type, Description: p.Description, Enum: enumStrings(p.Enum), Examples: enumStrings(p.Examples), Minimum: p.Minimum, Maximum: p.Maximum, MinArea: p.XFal.MinArea, MaxArea: p.XFal.MaxArea}
 	if len(p.Default) > 0 {
 		var d any
 		if err := json.Unmarshal(p.Default, &d); err == nil {

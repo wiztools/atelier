@@ -146,6 +146,8 @@ export function ListFalVideoRestyleModels():Promise<Array<main.FalModel>>;
 
 export function ListFalVideoUpscaleModels():Promise<Array<main.FalModel>>;
 
+export function ListFalVoiceChangerModels():Promise<Array<main.FalModel>>;
+
 export function ListFalVoiceDesignModels():Promise<Array<main.FalModel>>;
 
 export function ListInpaintModels(arg1:string):Promise<Array<main.InpaintModelOption>>;
