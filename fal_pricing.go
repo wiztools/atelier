@@ -421,6 +421,12 @@ type falBillingHints struct {
 	// whose pages publish a per-tier table (see falVideoTierMultiplier). 0 or
 	// 1 means the request rode the base tier or the endpoint has no table.
 	TierMultiplier float64
+	// WholeMinutes bills a per-minute quote in whole minutes — the length
+	// rounded up to the next full minute, one minute at minimum — instead of
+	// the fractional minute the seconds hint states. fal's per-minute
+	// endpoints split on this (see falBillsWholeMinutes), so the call site
+	// says which rule its endpoint bills by.
+	WholeMinutes bool
 	// RequestID is the fal queue request id of the completed generation this
 	// call prices. When set, fal's own charge for that request is read first
 	// (falPricingCache.reportedCostMicros) and the estimate serves only when
@@ -470,11 +476,17 @@ func (hints falBillingHints) quantityForUnit(unit string) (float64, bool) {
 		}
 		return float64(hints.Requests), hints.Requests > 0
 	case "minute", "minutes":
-		// fal's per-minute video unit — sync-lipsync bills per minute of
-		// output video ($3/min on v2, $0.70/min on v1, verified 2026-10).
-		// A minute is exactly sixty seconds of the seconds hint, which the
-		// lipsync call site fills from the rendered clip's own container
-		// (see falLipsyncBillingSeconds).
+		// fal's per-minute unit. sync-lipsync bills per minute of output
+		// video ($3/min on v2, $0.70/min on v1, verified 2026-10) PRO RATA —
+		// fal's own comparison prices a 10s Lipsync 2 Pro clip at "roughly
+		// $0.83" against its $5/min — so a minute is sixty seconds of the
+		// seconds hint, which the lipsync call site fills from the rendered
+		// clip's own container (see falLipsyncBillingSeconds). The endpoints
+		// that bill whole minutes (WholeMinutes, falBillsWholeMinutes) round
+		// the length up instead.
+		if hints.WholeMinutes {
+			return falWholeMinutes(hints.Seconds), hints.Seconds > 0
+		}
 		return hints.Seconds / 60, hints.Seconds > 0
 	default:
 		// Token-billed models: the unit names how many tokens one billed unit
@@ -1114,6 +1126,44 @@ func falLipsyncBillingSeconds(output []byte, audio string) (float64, bool) {
 		return seconds, true
 	}
 	return mediasniff.DataURLAudioDuration(audio)
+}
+
+// falBillsWholeMinutes reports the per-minute endpoints that bill WHOLE
+// minutes: any part of a minute bills as a full one, one minute at minimum.
+// The elevenlabs voice-changer is the one verified — fal's dashboard charged
+// $0.30 for conv_8a298a46840d3419c906c462's 10.144s source, where the
+// fractional minute the estimate priced came to $0.05072. Its page states no
+// rule ("$0.3 per minute" is all it says), so the rounding is the one fal
+// publishes for its other audio-to-audio endpoint (veed/clean-audio: "rounded
+// to whole seconds, then up to the next full minute; minimum 1 unit. A
+// 5:00.011 file is 5 units, a 5:01 file is 6"), which falWholeMinutes
+// follows. Only the first of those minutes is confirmed by observation: a
+// source longer than a minute has not been re-voiced against a dashboard
+// charge yet.
+//
+// Deliberately NOT the whole "minutes" unit — sync-lipsync prices pro rata
+// (fal's own comparison: "roughly $0.83 for a 10-second clip" against Lipsync
+// 2 Pro's $5/min), so rounding there would overstate a short clip many times
+// over (about 68× the $0.04375 that conv_d5a03dfe20e5225352212c2b's 0.875s
+// clip prices at $3/min). An endpoint not named here keeps its fractional
+// estimate, and the reported charge covers it wherever the key can read
+// billing.
+func falBillsWholeMinutes(model string) bool {
+	return strings.TrimSpace(model) == defaultFalVoiceChangerModel
+}
+
+// falWholeMinutes converts a length in seconds onto the whole minutes it
+// bills under falBillsWholeMinutes: rounded to whole seconds, then up to the
+// next full minute, one minute at minimum — a 10.144s source is one minute, a
+// 5:00.011 file five, a 5:01 file six. The seconds come first because that is
+// fal's documented order, and it is what keeps the sub-second dust a container
+// probe picks up (60.0000001s) from billing a second minute.
+func falWholeMinutes(seconds float64) float64 {
+	minutes := math.Ceil(math.Round(seconds) / 60)
+	if minutes < 1 {
+		return 1
+	}
+	return minutes
 }
 
 // estimateFalGenerationCost is the App-level entry the tool gateway calls

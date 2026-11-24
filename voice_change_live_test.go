@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -23,8 +24,9 @@ import (
 // voice-changer endpoint with the keychain's key — the
 // TestLiveFalPricingAndBilling sibling for the one thing about change_voice no
 // mock can confirm: the UNIT fal quotes. The estimate assumes a per-minute
-// quote (the model page's "$0.3 per minute") and quantityForUnit turns the
-// source's seconds into it; any other unit leaves the activity unpriced ("?"),
+// quote (the model page's "$0.3 per minute") billed in whole minutes
+// (falBillsWholeMinutes), and quantityForUnit rounds the source's seconds up
+// to the next full minute; any other unit leaves the activity unpriced ("?"),
 // which is safe but silent — this check makes it loud. It submits no
 // generation and spends nothing. The key is read in-process and never logged.
 //
@@ -73,21 +75,28 @@ func TestLiveFalVoiceChangerPricing(t *testing.T) {
 	default:
 		t.Errorf("quoted per %q, want a per-minute unit: quantityForUnit prices only minute/minutes from the source's seconds, so this quote leaves every change_voice activity at \"?\"", quote.Unit)
 	}
-	// The estimate end to end at the live rate: a three-second source.
-	micros := estimateFalCostMicros(ctx, cache, client, apiKey, endpoint, []string{endpoint}, falBillingHints{Requests: 1, Seconds: 3})
+
+	// The estimate end to end at the live rate, through the hints the gateway
+	// builds (WholeMinutes from falBillsWholeMinutes): the endpoint bills
+	// whole minutes, so a three-second source prices one full minute — the
+	// $0.30 fal's dashboard charged for conv_8a298a46840d3419c906c462's 10.1s
+	// source, against the $0.05 the fractional minute estimated.
+	hints := falBillingHints{Requests: 1, Seconds: 3, WholeMinutes: falBillsWholeMinutes(endpoint)}
+	micros := estimateFalCostMicros(ctx, cache, client, apiKey, endpoint, []string{endpoint}, hints)
 	t.Logf("estimate for a 3s source: $%.6f (%d micros)", float64(micros)/1e6, micros)
-	if micros <= 0 {
-		t.Errorf("a three-second source priced to nothing at unit %q — the ledger would show \"?\"", quote.Unit)
+	if want := int64(math.Round(quote.UnitPrice * falWholeMinutes(3) * 1e6)); micros != want {
+		t.Errorf("a three-second source estimated %d micros, want %d — one whole billed minute at the live rate (unit %q)", micros, want, quote.Unit)
 	}
 }
 
 // TestLiveFalVoiceChange runs change_voice through the real tool gateway
 // against fal with the keychain's key — the gated live check, like
 // TestLiveRunwareEndToEnd, and the repo's first PAID fal generation test (the
-// fal live checks until now were read-only). It spends real (small) money:
-// ONE conversion of about three seconds of speech, roughly $0.02 at the model
-// page's $0.3 per minute (up to $0.30 if fal bills whole minutes — the run
-// reports fal's own charge). What it confirms that no mock can:
+// fal live checks until now were read-only). It spends real money: ONE
+// conversion of about three seconds of speech, a whole billed minute — $0.30
+// at the model page's $0.3 per minute, since fal rounds a voice change up to
+// full minutes (falBillsWholeMinutes) — and a longer source costs no more
+// until it passes a minute. What it confirms that no mock can:
 //
 //   - the gate opens on a real key, and the registry entry's schema read
 //     returns the voice list the planner is offered;
@@ -105,8 +114,11 @@ func TestLiveFalVoiceChangerPricing(t *testing.T) {
 //
 // Verified live 2026-11-24: accepted in 11.5s, delivering 2.56s of 128 kbps
 // MP3 from a 2.50s source, with the 21-name voice list read from the live
-// schema. The key could not read billing (HTTP 403), so the $0.0125 estimate
-// stood unconfirmed.
+// schema. The key could not read billing (HTTP 403), and the estimate that
+// run recorded — $0.0125, 2.5s as a fraction of a minute — understated the
+// bill: fal's dashboard charged $0.30 that day for the 10.144s source of
+// conv_8a298a46840d3419c906c462, a whole minute — the same minute this
+// test's ~3s conversion falls in.
 //
 // The key is read in-process and never logged: nothing here may route it
 // through a shell pipe or print a request's headers.
@@ -114,7 +126,7 @@ func TestLiveFalVoiceChangerPricing(t *testing.T) {
 //	ATELIER_LIVE_FAL_VOICE_CHANGE=1 go test -run TestLiveFalVoiceChange -v .
 func TestLiveFalVoiceChange(t *testing.T) {
 	if os.Getenv("ATELIER_LIVE_FAL_VOICE_CHANGE") == "" {
-		t.Skip("set ATELIER_LIVE_FAL_VOICE_CHANGE=1 to run one paid voice change against the live fal API with the keychain key (about $0.02)")
+		t.Skip("set ATELIER_LIVE_FAL_VOICE_CHANGE=1 to run one paid voice change against the live fal API with the keychain key (one whole billed minute, about $0.30)")
 	}
 	apiKey, err := loadFalAPIKey()
 	if err != nil || apiKey == "" {

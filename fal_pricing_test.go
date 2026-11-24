@@ -89,8 +89,8 @@ func TestFalBillingHintsQuantityForUnit(t *testing.T) {
 		{unit: "megapixel", wantQty: 124.895232, wantOK: true},
 		{unit: "Megapixels", wantQty: 124.895232, wantOK: true},
 		{unit: "1 megapixel", wantQty: 124.895232, wantOK: true},
-		// fal's per-minute video unit (sync-lipsync v2/v1): sixty seconds
-		// of the seconds hint to the unit.
+		// fal's per-minute unit (sync-lipsync v2/v1, billed PRO RATA): sixty
+		// seconds of the seconds hint to the unit.
 		{unit: "minutes", wantQty: 0.125, wantOK: true},
 		{unit: "minute", wantQty: 0.125, wantOK: true},
 		{unit: "gpu_second", wantQty: 0, wantOK: false},
@@ -145,6 +145,19 @@ func TestFalBillingHintsQuantityForUnit(t *testing.T) {
 	}
 	if _, ok := (falBillingHints{Requests: 1}).quantityForUnit("minutes"); ok {
 		t.Fatal("quantityForUnit(minutes) with no seconds hint should report not-ok")
+	}
+	// The same quote on an endpoint that bills whole minutes (WholeMinutes,
+	// the call site's word — see falBillsWholeMinutes) rounds the length up:
+	// 7.5s is one full minute, not an eighth of one.
+	whole := hints
+	whole.WholeMinutes = true
+	if qty, ok := whole.quantityForUnit("minutes"); !ok || qty != 1 {
+		t.Fatalf("quantityForUnit(minutes) with WholeMinutes = (%v, %v), want (1, true)", qty, ok)
+	}
+	// The flag is the per-minute unit's alone: it never turns a per-second
+	// quote into whole anything.
+	if qty, ok := whole.quantityForUnit("seconds"); !ok || qty != 7.5 {
+		t.Fatalf("quantityForUnit(seconds) with WholeMinutes = (%v, %v), want (7.5, true)", qty, ok)
 	}
 }
 
@@ -782,6 +795,78 @@ func TestFalLipsyncBillingSeconds(t *testing.T) {
 	// Neither source measurable: not-ok.
 	if _, ok := falLipsyncBillingSeconds(tinyMP4(), ""); ok {
 		t.Fatal("lipsync billed seconds should be not-ok with no container and no audio")
+	}
+}
+
+// TestFalBillsWholeMinutes pins the whole-minute rule the elevenlabs voice
+// changer bills by. conv_8a298a46840d3419c906c462: two change_voice turns over
+// a 10.144s source recorded $0.05072 each — 10.144/60 of fal's $0.30/min —
+// while fal's dashboard charged $0.30 for the request, one full minute. The
+// flag rides the endpoint alone (lipsync's per-minute quote stays pro rata),
+// the length rounds the way fal documents its per-minute audio billing, and
+// the estimate lands on the whole minute.
+func TestFalBillsWholeMinutes(t *testing.T) {
+	// The rule is the endpoint's, not the unit's: fal's own comparison
+	// prices a 10s Lipsync 2 Pro clip at roughly $0.83 against $5/min.
+	for _, tc := range []struct {
+		model string
+		want  bool
+	}{
+		{defaultFalVoiceChangerModel, true},
+		{"  " + defaultFalVoiceChangerModel + "  ", true},
+		{"fal-ai/sync-lipsync/v2", false},
+		{"fal-ai/sync-lipsync/v2/pro", false},
+		{"fal-ai/sync-lipsync", false},
+		{"", false},
+	} {
+		if got := falBillsWholeMinutes(tc.model); got != tc.want {
+			t.Errorf("falBillsWholeMinutes(%q) = %v, want %v", tc.model, got, tc.want)
+		}
+	}
+
+	// fal's documented order — whole seconds, then up to the next full
+	// minute, one minute at minimum — in its own worked examples.
+	for _, tc := range []struct {
+		seconds float64
+		want    float64
+	}{
+		{10.144, 1},        // the conv's source
+		{0.25, 1},          // any part of a minute bills the minute
+		{59.9, 1},          // it rounds to 60 whole seconds: still one minute
+		{60, 1},            // exactly one minute is one minute
+		{61, 2},            // one second over is the next full minute
+		{300.011, 5},       // fal: "A 5:00.011 file is 5 units"
+		{301, 6},           // fal: "a 5:01 file is 6"
+		{3600.0000001, 60}, // probe dust never bills a second minute
+	} {
+		if got := falWholeMinutes(tc.seconds); got != tc.want {
+			t.Errorf("falWholeMinutes(%v) = %v, want %v", tc.seconds, got, tc.want)
+		}
+	}
+
+	// End to end at fal's live quote ($0.3 per minutes, 2026-11-24).
+	transport := &falPricingTransport{body: `{"prices":[` +
+		`{"endpoint_id":"` + defaultFalVoiceChangerModel + `","unit_price":0.3,"unit":"minutes","currency":"USD"},` +
+		`{"endpoint_id":"fal-ai/sync-lipsync/v2","unit_price":3,"unit":"minutes","currency":"USD"}` +
+		`],"next_cursor":null,"has_more":false}`}
+	client := &http.Client{Transport: transport}
+	cache := newFalPricingCache()
+	ctx := context.Background()
+	hints := falBillingHints{Requests: 1, Seconds: 10.144, WholeMinutes: falBillsWholeMinutes(defaultFalVoiceChangerModel)}
+	if got := estimateFalCostMicros(ctx, cache, client, "key", defaultFalVoiceChangerModel, nil, hints); got != 300000 {
+		t.Errorf("a 10.144s voice change estimated %d micros, want 300000 — the $0.30 fal charged", got)
+	}
+	// What the same turn recorded before the rule: the fractional minute.
+	hints.WholeMinutes = false
+	if got := estimateFalCostMicros(ctx, cache, client, "key", defaultFalVoiceChangerModel, nil, hints); got != 50720 {
+		t.Errorf("a 10.144s voice change at a fractional minute = %d micros, want the 50720 conv_8a298a46840d3419c906c462 recorded", got)
+	}
+	// Lipsync keeps its pro-rata minute: the call site's own expression
+	// (falBillsWholeMinutes on the model it prices) leaves the quote alone.
+	const lipsync = "fal-ai/sync-lipsync/v2"
+	lipsyncHints := falBillingHints{Requests: 1, Seconds: 10, WholeMinutes: falBillsWholeMinutes(lipsync)}
+	if got := estimateFalCostMicros(ctx, cache, client, "key", lipsync, nil, lipsyncHints); got != 500000 {
+		t.Errorf("a 10s lipsync estimated %d micros, want 500000 at 10/60 of $3 — pro rata, not a whole minute", got)
 	}
 }
 

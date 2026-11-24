@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -754,8 +753,10 @@ func TestHarnessChangesVoiceViaFal(t *testing.T) {
 		t.Fatalf("assistant turn has no audio artifact: %+v", assistant.Content)
 	}
 
-	// The ledger: fal attribution, the change-voice command, and the per-minute
-	// estimate over the source's own 2 seconds ($0.3/min → $0.01).
+	// The ledger: fal attribution, the change-voice command, and the
+	// whole-minute estimate over the source's own 2 seconds — the voice
+	// changer bills full minutes, so 2s is one minute at $0.3, not $0.01
+	// (conv_8a298a46840d3419c906c462: $0.05072 recorded against fal's $0.30).
 	activity := persistedToolActivity(t, config)
 	if activity["name"] != voiceChangerToolName || activity["provider"] != "fal" || activity["mediaKind"] != "audio" {
 		t.Fatalf("activity = %+v, want change_voice on fal producing audio", activity)
@@ -764,8 +765,8 @@ func TestHarnessChangesVoiceViaFal(t *testing.T) {
 	if !reflect.DeepEqual(activity["command"], wantCommand) {
 		t.Errorf("activity command = %v, want %v", activity["command"], wantCommand)
 	}
-	if activity["costMicros"] != float64(10000) || activity["costUnknown"] == true {
-		t.Errorf("activity cost = %v (unknown %v), want 10000 micros from 2s at $0.3 per minute", activity["costMicros"], activity["costUnknown"])
+	if activity["costMicros"] != float64(300000) || activity["costUnknown"] == true {
+		t.Errorf("activity cost = %v (unknown %v), want 300000 micros: 2s is one whole billed minute at $0.3", activity["costMicros"], activity["costUnknown"])
 	}
 }
 
@@ -945,19 +946,20 @@ func TestConversationModelOverridesVoiceChangerModel(t *testing.T) {
 	}
 }
 
-// TestVoiceChangeBillingAndPricingBatch pins the money side: a per-minute quote
-// prices off the source's seconds while a flat quote prices as one call, an
-// unmeasurable source prices nothing (never a guess), and the endpoint joins
-// the shared pricing batch only on the fal route.
+// TestVoiceChangeBillingAndPricingBatch pins the money side: a per-minute
+// quote prices off the source's seconds in WHOLE minutes — the endpoint bills
+// any part of a minute as a full one — while a flat quote prices as one call,
+// an unmeasurable source prices nothing (never a guess), and the endpoint
+// joins the shared pricing batch only on the fal route.
 func TestVoiceChangeBillingAndPricingBatch(t *testing.T) {
-	hints := falBillingHints{Requests: 1, Seconds: 2}
-	if quantity, ok := hints.quantityForUnit("minutes"); !ok || math.Abs(quantity-2.0/60) > 1e-9 {
-		t.Fatalf("minutes quantity = (%v, %v), want 2s as 1/30 of a minute", quantity, ok)
+	hints := falBillingHints{Requests: 1, Seconds: 2, WholeMinutes: falBillsWholeMinutes(defaultFalVoiceChangerModel)}
+	if quantity, ok := hints.quantityForUnit("minutes"); !ok || quantity != 1 {
+		t.Fatalf("minutes quantity = (%v, %v), want 2s billed as one whole minute", quantity, ok)
 	}
 	if quantity, ok := hints.quantityForUnit("request"); !ok || quantity != 1 {
 		t.Fatalf("request quantity = (%v, %v), want one call", quantity, ok)
 	}
-	if _, ok := (falBillingHints{Requests: 1}).quantityForUnit("minutes"); ok {
+	if _, ok := (falBillingHints{Requests: 1, WholeMinutes: falBillsWholeMinutes(defaultFalVoiceChangerModel)}).quantityForUnit("minutes"); ok {
 		t.Fatal("an unmeasurable source must not price a per-minute quote")
 	}
 

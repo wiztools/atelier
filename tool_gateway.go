@@ -1920,13 +1920,14 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				notices = append(notices, mediaGenerationRecoveredNotice)
 			}
 			if err == nil {
-				// The endpoint bills per minute, so the estimate is the source
-				// clip's own length (the output runs the same length); fal's
-				// reported charge for the request still wins wherever the key
-				// can read billing. An unmeasurable source prices nothing
-				// rather than guessing — the engine layer then stamps
-				// CostUnknown.
-				hints := falBillingHints{Requests: 1, Seconds: req.SourceDurationSeconds}
+				// The endpoint bills WHOLE minutes (falBillsWholeMinutes), so
+				// the estimate is the source clip's own length rounded up to
+				// the next full minute, one at minimum — the output runs the
+				// same length; fal's reported charge for the request still
+				// wins wherever the key can read billing. An unmeasurable
+				// source prices nothing rather than guessing — the engine
+				// layer then stamps CostUnknown.
+				hints := falBillingHints{Requests: 1, Seconds: req.SourceDurationSeconds, WholeMinutes: falBillsWholeMinutes(req.Model)}
 				hints.RequestID = job.ID
 				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)
 			}

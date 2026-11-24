@@ -140,8 +140,9 @@ const (
 	// plain string naming a premade voice, default "Rachel" — the schema's
 	// examples list the catalog, which is why SchemaProperty keeps Examples),
 	// model_id, four tuning dials, remove_background_noise, seed, and
-	// output_format (mp3_44100_128 by default); fal bills it per minute. There
-	// is no prompt input: the target is a voice NAME, never a description.
+	// output_format (mp3_44100_128 by default); fal bills it per WHOLE
+	// minute (falBillsWholeMinutes). There is no prompt input: the target is
+	// a voice NAME, never a description.
 	// Pinned in testdata/fal-schemas/elevenlabs-voice-changer.json
 	// (captured 2026-11-24) and mapped by resolveVoiceChangeBody.
 	defaultFalVoiceChangerModel = "fal-ai/elevenlabs/voice-changer"
