@@ -968,8 +968,14 @@ func TestHarnessGeneratesSoundViaFal(t *testing.T) {
 			if strings.HasSuffix(req.URL.Path, "/requests/req-snd-1") {
 				return jsonResponse(`{"audio":{"url":"https://queue.fal.run/generated.mp3","content_type":"audio/mpeg"}}`), nil
 			}
+			// The clip the call asked for: 383 frames ≈ 10.005s for the
+			// 10s request. The result measures what was delivered and
+			// notices a disagreement with the requested length
+			// (soundLengthNotice), so a one-frame stub would no longer be
+			// the no-notice happy path.
+			mp3 := append([]byte("ID3\x04\x00\x00\x00\x00\x00\x00"), mediasnifftest.MP3(383)...)
 			return &http.Response{StatusCode: 200, Status: "200 OK",
-				Body:   io.NopCloser(strings.NewReader(string(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x00"), 0xFF, 0xFB, 0x90, 0x00)))),
+				Body:   io.NopCloser(bytes.NewReader(mp3)),
 				Header: http.Header{"Content-Type": []string{"audio/mpeg"}}}, nil
 		}
 		switch req.URL.Path {

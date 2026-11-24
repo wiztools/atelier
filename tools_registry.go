@@ -274,6 +274,18 @@ type ToolAudioResult struct {
 	Count   int             `json:"count"`
 	Audios  []ToolAudioFile `json:"audios,omitempty"`
 	Notices []string        `json:"notices,omitempty"`
+	// DurationSeconds is the delivered clip's length as measured from its own
+	// file (zero when unmeasurable) — the audio sibling of ToolVideoResult's
+	// measured shape. It lets the planner and the reply describe the clip that
+	// shipped rather than the length that was asked for
+	// (conv_842f67a84cf687ac2f828eff: nothing in the evidence said the "8s"
+	// clip was 3s, and the reply confirmed an 8-second file).
+	DurationSeconds float64 `json:"durationSeconds,omitempty"`
+	// Diagnostics carries machine-facing resolution decisions recorded on a
+	// successful call (a duration recovered from triage's note). Like the image
+	// and video results' it rides tool evidence and the persisted run, never
+	// the chat reply.
+	Diagnostics []string `json:"diagnostics,omitempty"`
 	// CostMicros estimates what this generation cost in USD millionths
 	// (fal_pricing.go); zero for the local ffmpeg tools.
 	CostMicros int64 `json:"costMicros,omitempty"`
@@ -284,6 +296,30 @@ type ToolAudioResult struct {
 
 // ToolCommand names the executed argv of the local CLI run behind this result.
 func (r ToolAudioResult) ToolCommand() []string { return r.Command }
+
+// ToolDiagnostics reports machine-facing resolution decisions recorded on a
+// successful audio generation (e.g. a duration recovered from triage's note).
+// Mirrors ToolNotices with the same routing split as the image and video
+// results.
+func (r ToolAudioResult) ToolDiagnostics() []string { return r.Diagnostics }
+
+// measureAudioLength fills the result's delivered-length field the way
+// joinAudioClipFactFor measures a staged clip: ffprobe answers exactly when it
+// is installed, otherwise the pure-Go byte sniff (mediasniff.AudioDuration —
+// WAV, MP3, FLAC, OGG, M4A, ADTS) covers the length, reading an MP3 up to
+// about 0.05s long (encoder delay and the padded last frame). Fail-soft: an
+// unmeasurable clip leaves it unset.
+func (r *ToolAudioResult) measureAudioLength(ctx context.Context, config AppConfig, path string, data []byte) {
+	if _, ok := resolveLocalFFprobeBinary(config); ok {
+		if probe, err := probeStagedMedia(ctx, config, path, "audio"); err == nil && probe.Duration > 0 {
+			r.DurationSeconds = probe.Duration
+			return
+		}
+	}
+	if seconds, ok := mediasniff.AudioDuration(data); ok && seconds > 0 {
+		r.DurationSeconds = seconds
+	}
+}
 
 // ToolTranscriptFile mirrors ToolVideoFile/ToolAudioFile: a timestamped
 // transcript persisted as an on-disk temp-file reference. The harness moves it
@@ -2100,13 +2136,17 @@ func soundEffectsGenerationDescription(provider string) string {
 	if provider == "runware" {
 		backend = "Runware audio model"
 	}
-	return "Use this when the user asks to create music, ambience, or a sound effect from a description. The configured " + backend + " generates the clip and it is attached to the assistant reply. When the request names a genre or mood, pass it as style and keep content as the pure lyrics or sound description. To make an existing clip longer (\"extend this\", \"add 30 seconds to this clip\", \"continue this song\") use extend_audio instead."
+	// The length sentence is generate_video's: a format-schema planner reads
+	// only this description and the Example, so the parameter is named here
+	// (conv_842f67a84cf687ac2f828eff: "duration 8s" rode the prompt as prose).
+	return "Use this when the user asks to create music, ambience, or a sound effect from a description. The configured " + backend + " generates the clip and it is attached to the assistant reply. When the request names a genre or mood, pass it as style and keep content as the pure lyrics or sound description. A length the user states — \"an 8-second clip\", \"a 30-second track\" — rides the duration parameter (e.g. duration:\"8\"); prompt prose cannot set the audio's length, and an omitted duration falls to the configured default. To make an existing clip longer (\"extend this\", \"add 30 seconds to this clip\", \"continue this song\") use extend_audio instead."
 }
 
 // stageGeneratedAudio writes a downloaded clip to a temp file and wraps it in
 // the ToolAudioResult every audio tool shares — carry-forward, artifacts, and
-// notice surfacing are keyed on that result type.
-func stageGeneratedAudio(model, prompt string, generated GeneratedAudio) (any, string, error) {
+// notice surfacing are keyed on that result type. It also measures the
+// delivered length, so the summary states what actually shipped.
+func stageGeneratedAudio(ctx context.Context, config AppConfig, model, prompt string, generated GeneratedAudio) (any, string, error) {
 	tempPath, err := writeTempAudio(generated)
 	if err != nil {
 		return nil, "audio generation failed", err
@@ -2119,7 +2159,62 @@ func stageGeneratedAudio(model, prompt string, generated GeneratedAudio) (any, s
 		CostMicros: generated.CostMicros,
 		Notices:    generated.Notices,
 	}
-	return output, fmt.Sprintf("generated audio with %s", model), nil
+	output.measureAudioLength(ctx, config, tempPath, generated.Data)
+	// The summary names the length that shipped. One that named only the
+	// model left the planner and the reply to assume the requested length
+	// (conv_842f67a84cf687ac2f828eff: "generated audio with fal-ai/
+	// elevenlabs/sound-effects/v2" beside a 3s clip, and the reply confirmed
+	// the 8-second file).
+	summary := fmt.Sprintf("generated audio with %s", model)
+	if output.DurationSeconds > 0 {
+		summary = fmt.Sprintf("generated %s of audio with %s", formatAudioLength(output.DurationSeconds), model)
+	}
+	return output, summary, nil
+}
+
+// formatAudioLength renders a measured clip length for evidence ("3.0s").
+func formatAudioLength(seconds float64) string {
+	return strconv.FormatFloat(seconds, 'f', 1, 64) + "s"
+}
+
+const (
+	// soundLengthNoticeShare is the share of a requested clip length the
+	// delivered audio may fall short of or run past before the result says so.
+	soundLengthNoticeShare = 0.1
+	// soundLengthNoticeFloor is the absolute slack for short clips, where a
+	// tenth of the request is smaller than an MP3's encoder delay and padded
+	// last frame.
+	soundLengthNoticeFloor = 0.5
+)
+
+// soundLengthNotice compares the delivered clip's measured length with the
+// length the call sent and, when they disagree, returns the notice saying so.
+// It returns "" when they agree, when no length was sent ("auto" leaves the
+// length to the model), or when the clip could not be measured. A resolver
+// notice that already concerns the duration — dropped for a model with no
+// duration control, clamped to its bounds, ignored as unparseable — owns the
+// story: the length that shipped is that notice's consequence. The video
+// sibling is the delivered-shape notice on ToolVideoResult
+// (conv_842f67a84cf687ac2f828eff: a 3s clip answered an 8s ask and nothing in
+// the result said the two differed).
+func soundLengthNotice(result ToolAudioResult, requestedDuration string) string {
+	if result.DurationSeconds <= 0 {
+		return ""
+	}
+	requested, err := strconv.ParseFloat(strings.TrimSpace(requestedDuration), 64)
+	if err != nil || requested <= 0 {
+		return ""
+	}
+	for _, notice := range result.Notices {
+		if strings.Contains(strings.ToLower(notice), "duration") {
+			return ""
+		}
+	}
+	if math.Abs(result.DurationSeconds-requested) <= math.Max(soundLengthNoticeFloor, requested*soundLengthNoticeShare) {
+		return ""
+	}
+	return fmt.Sprintf("Requested %ss of audio, but %s delivered %s. Atelier did not adjust the clip's length.",
+		strconv.FormatFloat(requested, 'f', -1, 64), result.Model, formatAudioLength(result.DurationSeconds))
 }
 
 // audioGenerationExecute is the shared Execute body for generate_speech and
@@ -2146,7 +2241,7 @@ func audioGenerationExecute(ctx context.Context, tools HarnessToolExecutionConte
 	if len(generated.Data) == 0 {
 		return nil, "audio generation returned no audio", errors.New("audio model returned no audio data")
 	}
-	return stageGeneratedAudio(audioReq.Model, audioReq.Prompt, generated)
+	return stageGeneratedAudio(ctx, tools.Config, audioReq.Model, audioReq.Prompt, generated)
 }
 
 // audioGenerationActivity renders the shared fal generate command for any tool
@@ -2375,7 +2470,7 @@ func voiceDesignExecute(ctx context.Context, tools HarnessToolExecutionContext, 
 		return nil, "voice design returned no audio", errors.New("voice design returned no audio")
 	}
 	generated.Notices = append(generated.Notices, notices...)
-	out, summary, err := stageGeneratedAudio(req.Model, description, generated)
+	out, summary, err := stageGeneratedAudio(ctx, tools.Config, req.Model, description, generated)
 	if typed, ok := out.(ToolAudioResult); ok {
 		if generated.VoiceID != "" {
 			typed.Notices = append(typed.Notices, fmt.Sprintf(
@@ -2636,7 +2731,7 @@ func voiceChangeExecute(ctx context.Context, tools HarnessToolExecutionContext, 
 	if len(generated.Data) == 0 {
 		return nil, "voice change returned no audio", errors.New("the voice changer returned no audio data")
 	}
-	out, summary, err := stageGeneratedAudio(req.Model, "voice: "+req.Voice, generated)
+	out, summary, err := stageGeneratedAudio(ctx, tools.Config, req.Model, "voice: "+req.Voice, generated)
 	if typed, ok := out.(ToolAudioResult); ok {
 		out = typed
 		summary = fmt.Sprintf("changed the voice to %s with %s", req.Voice, req.Model)
@@ -2715,7 +2810,11 @@ func soundEffectsGenerationToolDefinition(provider string) HarnessToolDefinition
 		Name:        "generate_sound",
 		Title:       "Generate sound",
 		Description: soundEffectsGenerationDescription(provider),
-		Example:     `{"name":"generate_sound","content":"a calm lo-fi piano loop with soft rain in the background"}`,
+		// The Example carries duration beside content the way generate_video's
+		// and extend_audio's do: a format-schema planner reads only the catalog
+		// (Example + Description), so this is the slot that shows a stated
+		// length belongs on the call.
+		Example:     `{"name":"generate_sound","content":"a calm lo-fi piano loop with soft rain in the background","duration":"10"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: generateSoundParamSchema(),
 		Validate: func(prefix string, call HarnessToolCall) []string {
@@ -2728,15 +2827,24 @@ func soundEffectsGenerationToolDefinition(provider string) HarnessToolDefinition
 			// Duration precedence mirrors generate_video's: an explicit duration
 			// on the call wins; otherwise the configured default applies. "auto"
 			// (or empty) sends no duration and the model decides the clip length
-			// from the prompt — the pre-setting behavior.
+			// from the prompt — the pre-setting behavior. Between the two sits
+			// triage's stated length (the generate_video rule,
+			// conv_efa4b078cd9a24df88d76203): conv_842f67a84cf687ac2f828eff's
+			// planner dropped the user's "8s" into the prompt prose, the
+			// configured "auto" sent nothing, and the endpoint rendered 3s.
 			duration := strings.TrimSpace(call.Duration)
+			recoveredDuration := ""
 			if duration == "" {
-				duration = strings.TrimSpace(tools.Config.Generation.Audio.Duration)
+				if recoveredDuration = triageDurationSeconds(tools.TriageTask); recoveredDuration != "" {
+					duration = recoveredDuration
+				} else {
+					duration = strings.TrimSpace(tools.Config.Generation.Audio.Duration)
+				}
 			}
 			if duration == "" || strings.EqualFold(duration, "auto") {
 				duration = ""
 			}
-			return audioGenerationExecute(ctx, tools, AudioGenerateRequest{
+			output, summary, err := audioGenerationExecute(ctx, tools, AudioGenerateRequest{
 				Model:          strings.TrimSpace(call.Model),
 				Prompt:         call.Content,
 				Kind:           audioKindSound,
@@ -2745,6 +2853,24 @@ func soundEffectsGenerationToolDefinition(provider string) HarnessToolDefinition
 				Loop:           call.Loop,
 				Style:          strings.TrimSpace(call.Style),
 			}, resolveDefaultSoundEffectsModel)
+			if err != nil {
+				return output, summary, err
+			}
+			result, ok := output.(ToolAudioResult)
+			if !ok {
+				return output, summary, nil
+			}
+			// Both ride only the successful call, the generate_video rule: a
+			// failed one carries nothing but the error.
+			if recoveredDuration != "" {
+				result.Diagnostics = append(result.Diagnostics, fmt.Sprintf(
+					"The planned call omitted duration, but triage named a %ss clip, so the call ran with duration %q instead of the configured default.",
+					recoveredDuration, recoveredDuration))
+			}
+			if notice := soundLengthNotice(result, duration); notice != "" {
+				result.Notices = append(result.Notices, notice)
+			}
+			return result, summary, nil
 		},
 		Activity: func(result HarnessToolResult) HarnessToolActivity {
 			// The engine layer defaults audio activities to fal (the fal-era
@@ -2948,8 +3074,17 @@ func extendAudioToolDefinition(provider string) HarnessToolDefinition {
 			// the call wins; otherwise the configured default applies; "auto" (or
 			// empty) sends nothing and each extend flavor keeps its own behavior —
 			// the mapped models' built-in default, sonauto deciding from the audio.
+			// Between the call and the config sits triage's stated length — the
+			// seconds to ADD — the generate_video rule
+			// (conv_efa4b078cd9a24df88d76203): "add 30 seconds" must not fall to
+			// the default because the planner dropped it.
+			recoveredDuration := ""
 			if req.Duration == "" {
-				req.Duration = strings.TrimSpace(tools.Config.Generation.Audio.ExtendDuration)
+				if recoveredDuration = triageDurationSeconds(tools.TriageTask); recoveredDuration != "" {
+					req.Duration = recoveredDuration
+				} else {
+					req.Duration = strings.TrimSpace(tools.Config.Generation.Audio.ExtendDuration)
+				}
 			}
 			if strings.EqualFold(req.Duration, "auto") {
 				req.Duration = ""
@@ -2967,7 +3102,17 @@ func extendAudioToolDefinition(provider string) HarnessToolDefinition {
 			if len(generated.Data) == 0 {
 				return nil, "audio extend returned no audio", errors.New("audio extend model returned no audio data")
 			}
-			return stageGeneratedAudio(req.Model, req.Prompt, generated)
+			output, summary, err := stageGeneratedAudio(ctx, tools.Config, req.Model, req.Prompt, generated)
+			if err != nil {
+				return output, summary, err
+			}
+			if result, ok := output.(ToolAudioResult); ok && recoveredDuration != "" {
+				result.Diagnostics = append(result.Diagnostics, fmt.Sprintf(
+					"The planned call omitted duration, but triage named a %ss extension, so the call ran with duration %q instead of the configured default.",
+					recoveredDuration, recoveredDuration))
+				return result, summary, nil
+			}
+			return output, summary, nil
 		},
 		Activity: func(result HarnessToolResult) HarnessToolActivity {
 			// The engine layer defaults audio activities to fal (the fal-era

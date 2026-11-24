@@ -2933,6 +2933,49 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 						// not name a voice at all). HarnessToolCall.Voice
 						// always carried it; only the grammar lacked it.
 						"voice": map[string]any{"type": "string"},
+						// The generation inputs the per-tool param schemas always
+						// declared but this grammar never freed: only the call
+						// struct and the kwarg dialect carried them, so a
+						// format-schema planner could not express any of them.
+						// conv_842f67a84cf687ac2f828eff: the user asked for an
+						// 8s sound clip, the planner wrote "duration 8s" into the
+						// prompt prose because duration had no slot here, the
+						// configured "auto" sent nothing, and the endpoint chose
+						// 3s. Across the recorded history a format-schema
+						// planner put a duration on 0 of 94 length-taking calls
+						// against 123 of 149 in native mode, and every
+						// duration-loss turn behind the planner note and
+						// generate_video's executor recovery was format mode.
+						// duration/resolution/fps are the generation dials
+						// (generate_video, generate_sound, extend_audio;
+						// resolution also generate_image and the video
+						// transforms); negativePrompt/style/lyrics/direction the
+						// prompt-adjacent steering; loop the seamless-loop
+						// request; imageRole/openingFrame/useVideoAs/source/
+						// faceFrom the source-role selectors; generateAudio and
+						// cloneVoice the pointer toggles (a strict-mode null is
+						// "unset", which is why both are pointers); model the
+						// per-call endpoint override the tool descriptions name
+						// (extend_audio's vocal models). Per-tool validated like
+						// every entry here — the grammar only frees them. env is
+						// the one call field deliberately left out: see
+						// TestHarnessPlanSchemaDeclaresCallFields.
+						"model":          map[string]any{"type": "string"},
+						"negativePrompt": map[string]any{"type": "string"},
+						"generateAudio":  map[string]any{"type": "boolean"},
+						"useVideoAs":     map[string]any{"type": "string"},
+						"source":         map[string]any{"type": "string"},
+						"imageRole":      map[string]any{"type": "string"},
+						"openingFrame":   map[string]any{"type": "string"},
+						"faceFrom":       map[string]any{"type": "string"},
+						"duration":       map[string]any{"type": "string"},
+						"resolution":     map[string]any{"type": "string"},
+						"fps":            map[string]any{"type": "string"},
+						"loop":           map[string]any{"type": "boolean"},
+						"style":          map[string]any{"type": "string"},
+						"direction":      map[string]any{"type": "string"},
+						"lyrics":         map[string]any{"type": "string"},
+						"cloneVoice":     map[string]any{"type": "boolean"},
 						// add_sound_effects input: the dialogue-preservation
 						// toggle (Mirelo SFX). Omitted for the model's own
 						// default; false asks for sound effects only.
