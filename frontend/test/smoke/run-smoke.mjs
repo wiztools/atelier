@@ -124,6 +124,21 @@ const SCENARIO = [
   })()`, 200],
   ['composer-close', `__smoke.click('button[aria-label="Close editor"]')`, 600],
   ['composer-discard', `__smoke.click('.move-dialog button', 'Discard changes')`, 1000],
+  // The audio mix's export door (＋ Audio → Save & export → Download). An
+  // audio-only export lands as an M4A and its row must hand Download to
+  // SaveAudio: through SaveVideo the macOS panel appends the video extension
+  // its allowed types demand, "….m4a.mp4". Auto-update is still on from the
+  // composer flow above, so opening the mix also starts an auto preview the
+  // export then yields — it stays queued here, and closing cancels it.
+  ['audio-mix-open', `__smoke.openAudioMix()`, 2000],
+  ['audio-mix-export', `__smoke.click('.editor-generate', 'Save & export')`, 800],
+  ['audio-mix-exported', `__smoke.completeExport()`, 800],
+  ['audio-mix-download', `(() => {
+    const result = __smoke.downloadExport();
+    const expected = JSON.stringify([{binding: 'SaveAudio', path: '/atelier-artifact/conv_alpha/aud_93f515c0ffee1234.m4a', suggestedName: 'swim---bgm-aud_93f515'}]);
+    return !!result && result.called.join(',') === 'SaveAudio' && result.toasted && JSON.stringify(result.saved) === expected;
+  })()`, 800],
+  ['audio-mix-close', `__smoke.click('button[aria-label="Close editor"]')`, 600],
   ['row-menu', `__smoke.click('button[aria-label="More actions for Storyboard ideas"]')`, 800],
   ['menu-closed', `(() => { document.body.dispatchEvent(new MouseEvent('mousedown', {bubbles: true})); return true; })()`, 400],
   ['models-view', `__smoke.click('button[aria-label="Model overrides for this conversation"]')`, 1200],
@@ -207,6 +222,58 @@ const IN_PAGE_HELPERS = `window.__smoke = {
       audioOnly: false, includeAudio: true, previewKey: req.previewKey, auto: !!req.auto, startedAt: '2026-11-04T10:00:00Z', updatedAt: '2026-11-04T10:00:00Z',
     }) > 0;
   },
+  // openAudioMix() opens ＋ Audio on the seeded mix and resolves once the
+  // composer's timeline has been measured. A track mounts at the scale floor
+  // and takes its width from a ResizeObserver on the next frame; a snapshot
+  // taken before that frame (seen once) would diff against a measured one,
+  // so the step waits for it — capped, and false if the editor never shows
+  // up measured.
+  openAudioMix() {
+    window.__atelier.seed = 'audio';
+    if (!this.click('button[aria-label="New audio mix"]')) return Promise.resolve(false);
+    const deadline = performance.now() + 5000;
+    return new Promise((resolve) => {
+      const check = () => {
+        const track = document.querySelector('.composition-lane-track');
+        const scroller = document.querySelector('.composition-lane-scroll');
+        // Measured is the observer's own arithmetic read back: above the
+        // floor, the track's width is the viewport the scroller offers it.
+        const measured = !!track && !!scroller && Math.abs(parseFloat(track.style.width) - Math.max(0, scroller.clientWidth - track.offsetLeft)) <= 1;
+        if (measured) return resolve(true);
+        if (performance.now() > deadline) return resolve(false);
+        setTimeout(check, 20);
+      };
+      check();
+    });
+  },
+  // completeExport() replays an EXPORT's completion for the newest submitted
+  // render as Go does for an audio-only mix: audioOnly, the aud_ artifact it
+  // adopted into the conversation, and that artifact's M4A as its result.
+  completeExport() {
+    const req = window.__atelier.lastRender;
+    if (!req || req.mode !== 'export') return false;
+    const id = window.__atelier.lastRenderId;
+    return window.__atelier.emit('atelier:composition-op', {
+      id, mode: 'export', conversationId: req.conversationId, status: 'completed', progress: 1, notices: [],
+      resultUrl: '/atelier-artifact/conv_alpha/aud_93f515c0ffee1234.m4a', exportArtifactId: 'aud_93f515c0ffee1234',
+      outputSeconds: 8.5, audioOnly: true, includeAudio: true, startedAt: '2026-11-04T10:00:00Z', updatedAt: '2026-11-04T10:00:00Z',
+    }) > 0;
+  },
+  // downloadExport() presses the Edits row's Download and reports the save
+  // bindings the click reached, each with its request — a binding is invoked
+  // inside the click handler, so the record is complete when click() returns.
+  // It also dismisses the toast the export's completion raised, so no later
+  // snapshot depends on when that toast's 6s lifetime ends; toasted says
+  // whether it was there.
+  downloadExport() {
+    const record = window.__atelier;
+    const calledFrom = record.calls.length;
+    const savedFrom = record.saves.length;
+    if (!this.click('.editor-op-actions button', 'Download')) return null;
+    const toast = this.find('.toast', 'Exported to the conversation');
+    if (toast) toast.querySelector('.toast-dismiss')?.click();
+    return {called: record.calls.slice(calledFrom), saved: record.saves.slice(savedFrom), toasted: !!toast};
+  },
 };`;
 
 // Everything the runner creates is registered here and torn down in reverse —
@@ -254,10 +321,12 @@ const isExpectedNoise = (event) => event.kind === 'log.error'
   && /\/favicon\.ico|\/atelier-artifact\//.test(event.text);
 
 // Message ids embed a fresh timestamp per request, so they differ between any
-// two runs; they are normalized before comparing.
+// two runs; they are normalized before comparing. So does the composer's
+// save row, which prints the wall-clock time of the save.
 const normalize = (html) => html
   .replace(/msg-assistant-chat-\d+-\w+/g, 'msg-assistant-chat-ID')
-  .replace(/msg-user-\d+/g, 'msg-user-ID');
+  .replace(/msg-user-\d+/g, 'msg-user-ID')
+  .replace(/>([^<]*)→ attached to the conversation</g, '>TIME → attached to the conversation<');
 
 async function runSession(label, root, outDir) {
   const port = await freePort();

@@ -8,9 +8,10 @@
 // with media usage (so the usage tables, chips, and panels all render), the
 // markdown chip resolves through ResolveMarkdownEditSource so the editor
 // opens, the composer seeds a two-clip draft whose renders the runner
-// completes by replaying atelier:composition-op, and the search returns the
-// wire shape ({conversation, titleMatched, matches}). Extend a fixture when
-// the session grows a step that needs it.
+// completes by replaying atelier:composition-op (or, for ＋ Audio, a
+// one-segment audio mix the session exports and downloads), and the search
+// returns the wire shape ({conversation, titleMatched, matches}). Extend a
+// fixture when the session grows a step that needs it.
 (() => {
   const at = (day) => `2026-11-0${day}T10:00:00Z`;
   const conversations = [
@@ -63,17 +64,39 @@
     schemaVersion: 1, name: 'Untitled composition', output: {width: 0, height: 0, fps: 0, fit: 'pad'}, audioLanes: [],
     video: [clip('clp_0000000000000000000000a1', clipRef('vid_0a1b2c3d4e5f', 6)), clip('clp_0000000000000000000000a2', clipRef('vid_1a2b3c4d5e6f', 4))],
   };
+  // The ＋ Audio door's draft: one music segment on a lane and no video, so
+  // the session can export an audio-only mix and download the M4A it lands
+  // as. A seed answers with whichever draft the runner last selected (seed);
+  // submitted saves of the export's revision land as that cmp_ artifact.
+  const audioRef = (id, seconds) => ({artifactId: id, conversationId: 'conv_alpha', path: `/Users/ana/.atelier/history/conv_alpha/${id}.m4a`, mimeType: 'audio/mp4', kind: 'audio', durationSeconds: seconds});
+  const seeds = {
+    video: compositionDraft,
+    audio: {
+      schemaVersion: 1, name: 'Swim - BGM', output: {width: 0, height: 0, fps: 0, fit: 'pad'}, video: [],
+      audioLanes: [{id: 'lane_1', name: 'Audio 1', gainDb: 0, muted: false, segments: [{id: 'seg_1', ref: audioRef('aud_f89a79bc', 8.5), inSeconds: 0, outSeconds: 8.5, startSeconds: 0, gainDb: 0, fadeInSeconds: 0, fadeOutSeconds: 0, ducks: []}]}],
+    },
+  };
   let renderCount = 0;
   const listeners = {};
   const calls = [];
+  const saves = [];
   window.__atelier = {
-    calls, listeners, lastStream: null, lastRender: null, lastRenderId: null,
+    calls, listeners, saves, lastStream: null, lastRender: null, lastRenderId: null, seed: 'video',
     emit(name, payload) {
       const cbs = listeners[name] || [];
       cbs.forEach((cb) => cb(payload));
       return cbs.length;
     },
   };
+  // cancelledSave answers a save-dialog binding as cancelled — the empty
+  // path trackSave keeps silent — recording the request so a step can read
+  // which door a click reached.
+  function cancelledSave(binding) {
+    return (req) => {
+      saves.push({binding, path: req.path, suggestedName: req.suggestedName});
+      return '';
+    };
+  }
   const answers = {
     GetConfig: () => ({}),
     LoadUIState: () => ({sidebar: {chatsCollapsed: false, librariesCollapsed: false, expandedLibraries: ['lib_1'], expandedProjects: ['proj_1']}, settings: {lastTab: 'providers'}}),
@@ -101,7 +124,10 @@
     }),
     ResolveMarkdownEditSource: () => ({conversationId: 'conv_alpha', conversationTitle: 'Storyboard ideas', artifactId: 'md_0a1b2c3d', url: '/atelier-artifact/conv_alpha/md_0a1b2c3d.md', mimeType: 'text/markdown', format: 'markdown', text: '# Shot list\n\n- Opening wide on the city\n- Close-up on the poster\n', wordCount: 11}),
     SearchConversations: () => ({results: [{conversation: conversations[1], titleMatched: true, matches: []}], truncated: false}),
-    SeedComposition: (req) => ({conversationId: req.conversationId, conversationTitle: 'Storyboard ideas', doc: compositionDraft, missingRefs: [], warnings: []}),
+    SeedComposition: (req) => ({conversationId: req.conversationId, conversationTitle: 'Storyboard ideas', doc: seeds[window.__atelier.seed], missingRefs: [], warnings: []}),
+    SaveCompositionEdit: (req) => ({conversationId: req.conversationId, artifactId: 'cmp_5682abb1c3d4', url: '/atelier-artifact/conv_alpha/cmp_5682abb1c3d4.json', doc: req.doc, summary: 'Swim - BGM · audio-only mix'}),
+    SaveAudio: cancelledSave('SaveAudio'),
+    SaveVideo: cancelledSave('SaveVideo'),
     SubmitCompositionRender: (req) => {
       renderCount += 1;
       window.__atelier.lastRender = req;

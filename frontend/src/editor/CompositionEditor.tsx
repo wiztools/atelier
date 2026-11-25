@@ -1,6 +1,6 @@
 import {useEffect, useMemo, useRef, useState} from 'react';
 import * as AppBindings from '../../wailsjs/go/main/App';
-import {CancelCompositionRender, SaveComposition, SaveVideo} from '../../wailsjs/go/main/App';
+import {CancelCompositionRender, SaveAudio, SaveComposition, SaveVideo} from '../../wailsjs/go/main/App';
 import {main} from '../../wailsjs/go/models';
 import {EventsOn} from '../../wailsjs/runtime/runtime';
 import {notifyError, notifySuccess, trackSave} from '../notifications';
@@ -2162,10 +2162,15 @@ export function CompositionEditor(props: {
                     type="button"
                     title="Save the exported file to disk"
                     onClick={() => {
-                      void trackSave(op.audioOnly ? 'audio' : 'video', SaveVideo(main.SaveVideoRequest.createFrom({
-                        path: op.resultUrl,
-                        suggestedName: `${doc.name.replace(/\s+/g, '-').toLowerCase() || 'composition'}-${(op.exportArtifactId || op.id).slice(0, 10)}`,
-                      })));
+                      const suggestedName = `${doc.name.replace(/\s+/g, '-').toLowerCase() || 'composition'}-${(op.exportArtifactId || op.id).slice(0, 10)}`;
+                      // An audio-only export is an M4A mix and takes the audio
+                      // door: SaveVideo's dialog admits only video extensions,
+                      // and the macOS panel answers a name it can't allow by
+                      // appending one of its own — "….m4a.mp4".
+                      const save = op.audioOnly
+                        ? SaveAudio(main.SaveAudioRequest.createFrom({path: op.resultUrl, suggestedName}))
+                        : SaveVideo(main.SaveVideoRequest.createFrom({path: op.resultUrl, suggestedName}));
+                      void trackSave(op.audioOnly ? 'audio' : 'video', save);
                     }}
                   >
                     Download
