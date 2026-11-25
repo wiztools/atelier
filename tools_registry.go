@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -1411,7 +1412,10 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 			// the user's "6s" would otherwise bill the configured default
 			// (conv_efa4b078cd9a24df88d76203: triage wrote duration:"6", the call
 			// carried none, and the clip rendered at the configured 10s).
-			duration := strings.TrimSpace(call.Duration)
+			// The call's own value is re-spelled to a bare decimal first
+			// (normalizeDurationSeconds): a planner echoing the user's "8s" must
+			// not lose the length to resolvers that read numbers only.
+			duration := normalizeDurationSeconds(call.Duration)
 			recoveredDuration := ""
 			if duration == "" {
 				if recoveredDuration = triageDurationSeconds(tools.TriageTask); recoveredDuration != "" {
@@ -2831,8 +2835,10 @@ func soundEffectsGenerationToolDefinition(provider string) HarnessToolDefinition
 			// triage's stated length (the generate_video rule,
 			// conv_efa4b078cd9a24df88d76203): conv_842f67a84cf687ac2f828eff's
 			// planner dropped the user's "8s" into the prompt prose, the
-			// configured "auto" sent nothing, and the endpoint rendered 3s.
-			duration := strings.TrimSpace(call.Duration)
+			// configured "auto" sent nothing, and the endpoint rendered 3s. The
+			// call's own value is re-spelled to a bare decimal first
+			// (normalizeDurationSeconds, conv_6d0c4284f7c739eaf960fd8c).
+			duration := normalizeDurationSeconds(call.Duration)
 			recoveredDuration := ""
 			if duration == "" {
 				if recoveredDuration = triageDurationSeconds(tools.TriageTask); recoveredDuration != "" {
@@ -3063,7 +3069,7 @@ func extendAudioToolDefinition(provider string) HarnessToolDefinition {
 			req := AudioExtendRequest{
 				Model:          strings.TrimSpace(call.Model),
 				Prompt:         strings.TrimSpace(call.Content),
-				Duration:       strings.TrimSpace(call.Duration),
+				Duration:       normalizeDurationSeconds(call.Duration),
 				Direction:      strings.TrimSpace(call.Direction),
 				NegativePrompt: strings.TrimSpace(call.NegativePrompt),
 				Style:          strings.TrimSpace(call.Style),
@@ -3071,9 +3077,11 @@ func extendAudioToolDefinition(provider string) HarnessToolDefinition {
 				SourceAudio:    source,
 			}
 			// Duration precedence mirrors generate_sound's: an explicit length on
-			// the call wins; otherwise the configured default applies; "auto" (or
-			// empty) sends nothing and each extend flavor keeps its own behavior —
-			// the mapped models' built-in default, sonauto deciding from the audio.
+			// the call wins, re-spelled to a bare decimal first
+			// (normalizeDurationSeconds); otherwise the configured default
+			// applies; "auto" (or empty) sends nothing and each extend flavor
+			// keeps its own behavior — the mapped models' built-in default,
+			// sonauto deciding from the audio.
 			// Between the call and the config sits triage's stated length — the
 			// seconds to ADD — the generate_video rule
 			// (conv_efa4b078cd9a24df88d76203): "add 30 seconds" must not fall to
@@ -4258,6 +4266,36 @@ func normalizeVideoResolutionTier(tier string) string {
 		return strings.ToLower(strings.TrimSpace(tier))
 	}
 	return ""
+}
+
+// durationParamPattern reads a call's duration value: a number with an
+// optional seconds unit ("8", "8s", "7.5 s", "8 seconds") and nothing else.
+var durationParamPattern = regexp.MustCompile(`(?i)^(\d+(?:\.\d+)?)\s*(?:s(?:ec(?:ond)?s?)?)?$`)
+
+// normalizeDurationSeconds re-spells a call's duration in the bare decimal
+// every resolver reads ("8s" → "8") and returns any other value trimmed but
+// unchanged — "auto", "", and text no resolver can read, which keeps meeting
+// the resolver's own unreadable-value notice. A planner takes the length from
+// the user's wording and the user writes the unit: "8s" rode a generate_sound
+// call verbatim in conv_6d0c4284f7c739eaf960fd8c, and every resolver parses
+// the value with strconv.ParseFloat — the Runware, fal, and Replicate sound
+// resolvers, the extend pair, videoDurationClamped — so the stated length
+// dropped as unreadable on each, and soundLengthNotice, which parses the same
+// way, stood silent beside it. (That conv shipped the wrong length only
+// because its model had no duration control at all; on the default mirelo the
+// same call would have fallen to the model's 10s default for an 8s ask.) The
+// bare decimal is the one form every downstream reader accepts: triage's
+// recovery already returns it (triageDurationSeconds) and the video enum leg
+// reads it leniently (videoDurationClamped). The configured default is
+// deliberately not routed through here — the Settings picker writes a video
+// model's own enum spelling, which the resolver matches exactly.
+func normalizeDurationSeconds(duration string) string {
+	duration = strings.TrimSpace(duration)
+	match := durationParamPattern.FindStringSubmatch(duration)
+	if match == nil {
+		return duration
+	}
+	return match[1]
 }
 
 // imageSizePresetLongEdge returns the long-edge pixel budget for a resolution
